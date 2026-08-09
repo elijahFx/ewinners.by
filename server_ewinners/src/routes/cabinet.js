@@ -1,10 +1,14 @@
 import { Router } from 'express';
 import { generateInvoicePdf } from '../services/invoicePdf.js';
 import { audit } from '../services/billing.js';
+import { ensureActForInvoice, ensureDetailDocument } from '../services/documents.js';
+import { notifyChannelsStatus, sendDocumentByEmail } from '../services/notify.js';
 import dayjs from 'dayjs';
+import fs from 'fs';
 import path from 'path';
 import { query } from '../db.js';
 import { authRequired, requireRoles } from '../middleware/auth.js';
+import { setCompanyApiKey } from '../services/apiKeys.js';
 
 const router = Router();
 
@@ -291,6 +295,20 @@ router.get('/documents', async (req, res) => {
   }
 });
 
+router.post('/documents/detail/generate', async (req, res) => {
+  try {
+    const companyId = companyScope(req);
+    if (!companyId) return res.status(400).json({ error: 'Компания не назначена' });
+    const companies = await query('SELECT * FROM companies WHERE id = :id LIMIT 1', { id: companyId });
+    if (!companies[0]) return res.status(404).json({ error: 'Компания не найдена' });
+    const doc = await ensureDetailDocument(companyId, companies[0]);
+    res.json({ document: doc });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message || 'Не удалось сформировать детализацию' });
+  }
+});
+
 router.get('/documents/:id/download', async (req, res) => {
   try {
     const companyId = companyScope(req);
@@ -302,13 +320,175 @@ router.get('/documents/:id/download', async (req, res) => {
     if (req.user.role === 'client' && doc.company_id !== companyId) {
       return res.status(403).json({ error: 'Нет доступа' });
     }
-    if (!doc.file_path) return res.status(404).json({ error: 'Файл не найден' });
+    if (!doc.file_path || !fs.existsSync(doc.file_path)) {
+      return res.status(404).json({ error: 'Файл не найден' });
+    }
     await query('UPDATE documents SET downloaded_at = NOW() WHERE id = :id', { id: doc.id });
     res.download(doc.file_path, path.basename(doc.file_path));
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Ошибка скачивания' });
   }
+});
+
+router.get('/documents/:id/view', async (req, res) => {
+  try {
+    const companyId = companyScope(req);
+    const rows = await query('SELECT * FROM documents WHERE id = :id LIMIT 1', {
+      id: Number(req.params.id),
+    });
+    const doc = rows[0];
+    if (!doc) return res.status(404).json({ error: 'Документ не найден' });
+    if (req.user.role === 'client' && doc.company_id !== companyId) {
+      return res.status(403).json({ error: 'Нет доступа' });
+    }
+    if (!doc.file_path || !fs.existsSync(doc.file_path)) {
+      return res.status(404).json({ error: 'Файл не найден' });
+    }
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `inline; filename="${path.basename(doc.file_path)}"`);
+    fs.createReadStream(doc.file_path).pipe(res);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Ошибка просмотра' });
+  }
+});
+
+router.post('/documents/:id/email', async (req, res) => {
+  try {
+    const companyId = companyScope(req);
+    const rows = await query('SELECT * FROM documents WHERE id = :id LIMIT 1', {
+      id: Number(req.params.id),
+    });
+    const doc = rows[0];
+    if (!doc) return res.status(404).json({ error: 'Документ не найден' });
+    if (req.user.role === 'client' && doc.company_id !== companyId) {
+      return res.status(403).json({ error: 'Нет доступа' });
+    }
+    if (!doc.file_path) return res.status(404).json({ error: 'Файл не найден' });
+
+    const to = String(req.body.email || req.user.email || '').trim();
+    if (!to) return res.status(400).json({ error: 'Укажите email' });
+
+    await sendDocumentByEmail({
+      to,
+      subject: `[E-Winners] ${doc.title || doc.number || 'Документ'}`,
+      text: `Во вложении документ ${doc.title || doc.number || ''}.`,
+      filePath: doc.file_path,
+      fileName: path.basename(doc.file_path),
+    });
+    await audit(req.user.id, 'email_document', 'document', doc.id, { to, type: doc.type });
+    res.json({ ok: true, to });
+  } catch (err) {
+    console.error(err);
+    res.status(400).json({ error: err.message || 'Не удалось отправить email' });
+  }
+});
+
+router.get('/invoices/:id/act', async (req, res) => {
+  try {
+    const companyId = companyScope(req);
+    const rows = await query('SELECT * FROM invoices WHERE id = :id LIMIT 1', {
+      id: Number(req.params.id),
+    });
+    const invoice = rows[0];
+    if (!invoice) return res.status(404).json({ error: 'Счёт не найден' });
+    if (req.user.role === 'client' && invoice.company_id !== companyId) {
+      return res.status(403).json({ error: 'Нет доступа' });
+    }
+    if (invoice.status !== 'paid') {
+      return res.status(400).json({ error: 'Акт доступен после оплаты счёта' });
+    }
+    const companies = await query('SELECT * FROM companies WHERE id = :id LIMIT 1', {
+      id: invoice.company_id,
+    });
+    const doc = await ensureActForInvoice(invoice, companies[0]);
+    const mode = req.query.mode === 'view' ? 'view' : 'download';
+    if (mode === 'view') {
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', `inline; filename="${path.basename(doc.file_path)}"`);
+      return fs.createReadStream(doc.file_path).pipe(res);
+    }
+    return res.download(doc.file_path, path.basename(doc.file_path));
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message || 'Ошибка акта' });
+  }
+});
+
+router.get('/invoices/:id/view', async (req, res) => {
+  try {
+    const companyId = companyScope(req);
+    const rows = await query('SELECT * FROM invoices WHERE id = :id LIMIT 1', {
+      id: Number(req.params.id),
+    });
+    const invoice = rows[0];
+    if (!invoice) return res.status(404).json({ error: 'Счёт не найден' });
+    if (req.user.role === 'client' && invoice.company_id !== companyId) {
+      return res.status(403).json({ error: 'Нет доступа' });
+    }
+    const companies = await query('SELECT * FROM companies WHERE id = :id LIMIT 1', {
+      id: invoice.company_id,
+    });
+    const { filePath, fileName } = await generateInvoicePdf({
+      number: invoice.number,
+      amount: invoice.amount,
+      purpose: invoice.purpose,
+      company: companies[0],
+      createdAt: dayjs(invoice.created_at).format('DD.MM.YYYY'),
+    });
+    await query('UPDATE invoices SET file_path = :file_path WHERE id = :id', {
+      file_path: filePath,
+      id: invoice.id,
+    });
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `inline; filename="${fileName}"`);
+    fs.createReadStream(filePath).pipe(res);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message || 'Ошибка просмотра' });
+  }
+});
+
+router.post('/invoices/:id/email', async (req, res) => {
+  try {
+    const companyId = companyScope(req);
+    const rows = await query('SELECT * FROM invoices WHERE id = :id LIMIT 1', {
+      id: Number(req.params.id),
+    });
+    const invoice = rows[0];
+    if (!invoice) return res.status(404).json({ error: 'Счёт не найден' });
+    if (req.user.role === 'client' && invoice.company_id !== companyId) {
+      return res.status(403).json({ error: 'Нет доступа' });
+    }
+    const companies = await query('SELECT * FROM companies WHERE id = :id LIMIT 1', {
+      id: invoice.company_id,
+    });
+    const { filePath, fileName } = await generateInvoicePdf({
+      number: invoice.number,
+      amount: invoice.amount,
+      purpose: invoice.purpose,
+      company: companies[0],
+      createdAt: dayjs(invoice.created_at).format('DD.MM.YYYY'),
+    });
+    const to = String(req.body.email || req.user.email || '').trim();
+    if (!to) return res.status(400).json({ error: 'Укажите email' });
+    await sendDocumentByEmail({
+      to,
+      subject: `[E-Winners] Счёт ${invoice.number}`,
+      text: `Во вложении счёт на оплату ${invoice.number}.`,
+      filePath,
+      fileName,
+    });
+    res.json({ ok: true, to });
+  } catch (err) {
+    console.error(err);
+    res.status(400).json({ error: err.message || 'Не удалось отправить email' });
+  }
+});
+
+router.get('/notify-status', async (_req, res) => {
+  res.json(notifyChannelsStatus());
 });
 
 router.get('/company', async (req, res) => {
@@ -364,6 +544,62 @@ router.get('/notifications', async (req, res) => {
 router.post('/notifications/read-all', async (req, res) => {
   await query('UPDATE notifications SET is_read = 1 WHERE user_id = :uid', { uid: req.user.id });
   res.json({ ok: true });
+});
+
+router.get('/api-key', async (req, res) => {
+  try {
+    if (req.user.role !== 'client') {
+      return res.status(403).json({ error: 'Только для клиентов компании' });
+    }
+    const companyId = req.user.company_id;
+    if (!companyId) return res.status(400).json({ error: 'Компания не назначена' });
+
+    const rows = await query(
+      `SELECT id, name, api_key, api_key_created_at FROM companies WHERE id = :id LIMIT 1`,
+      { id: companyId },
+    );
+    const company = rows[0];
+    if (!company) return res.status(404).json({ error: 'Компания не найдена' });
+
+    res.json({
+      companyId: company.id,
+      companyName: company.name,
+      apiKey: company.api_key || null,
+      createdAt: company.api_key_created_at || null,
+      hasKey: !!company.api_key,
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Не удалось получить API-ключ' });
+  }
+});
+
+router.post('/api-key/regenerate', async (req, res) => {
+  try {
+    if (req.user.role !== 'client') {
+      return res.status(403).json({ error: 'Только для клиентов компании' });
+    }
+    const companyId = req.user.company_id;
+    if (!companyId) return res.status(400).json({ error: 'Компания не назначена' });
+
+    const apiKey = await setCompanyApiKey(companyId);
+    await audit(req.user.id, 'regenerate_api_key', 'company', companyId, {});
+
+    const rows = await query(
+      `SELECT id, name, api_key, api_key_created_at FROM companies WHERE id = :id LIMIT 1`,
+      { id: companyId },
+    );
+    res.json({
+      companyId: rows[0].id,
+      companyName: rows[0].name,
+      apiKey,
+      createdAt: rows[0].api_key_created_at,
+      hasKey: true,
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Не удалось сгенерировать API-ключ' });
+  }
 });
 
 router.get('/export/transactions.csv', async (req, res) => {

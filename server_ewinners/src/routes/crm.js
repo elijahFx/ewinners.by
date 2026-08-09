@@ -9,9 +9,224 @@ import {
 
 const router = Router();
 
-router.post('/events', crmAuth, async (req, res) => {
+router.use(crmAuth);
+
+function mapTx(row) {
+  return {
+    id: row.id,
+    type: row.type,
+    category: row.category,
+    amount: Number(row.amount),
+    quantity: row.quantity != null ? Number(row.quantity) : null,
+    unitPrice: row.unit_price != null ? Number(row.unit_price) : null,
+    balanceAfter: Number(row.balance_after),
+    serviceCode: row.service_code || null,
+    serviceName: row.service_name || null,
+    projectId: row.project_id,
+    projectName: row.project_name || null,
+    employeeName: row.employee_name,
+    comment: row.comment,
+    crmEventId: row.crm_event_id,
+    createdAt: row.created_at,
+  };
+}
+
+async function loadTransactions(companyId, { serviceCodes, limit = 100, from, to } = {}) {
+  const lim = Math.min(Math.max(Number(limit) || 100, 1), 500);
+  const params = { company_id: companyId };
+  let sql = `SELECT t.*, s.code AS service_code, s.name AS service_name, p.name AS project_name
+             FROM transactions t
+             LEFT JOIN services s ON s.id = t.service_id
+             LEFT JOIN projects p ON p.id = t.project_id
+             WHERE t.company_id = :company_id AND t.status = 'posted'`;
+
+  if (serviceCodes?.length) {
+    sql += ` AND s.code IN (${serviceCodes.map((_, i) => `:sc${i}`).join(',')})`;
+    serviceCodes.forEach((code, i) => {
+      params[`sc${i}`] = code;
+    });
+  }
+  if (from) {
+    sql += ' AND t.created_at >= :from';
+    params.from = from;
+  }
+  if (to) {
+    sql += ' AND t.created_at <= :to';
+    params.to = to;
+  }
+
+  sql += ` ORDER BY t.created_at DESC LIMIT ${lim}`;
+  return query(sql, params);
+}
+
+/** Компания и баланс по API-ключу */
+router.get('/me', async (req, res) => {
+  const c = req.crmCompany;
+  const balance = Number(c.balance);
+  res.json({
+    companyId: c.id,
+    name: c.name,
+    unp: c.unp,
+    status: c.status,
+    balance,
+    creditLimit: Number(c.credit_limit),
+    available: balance + Number(c.credit_limit || 0),
+    notifyThreshold: Number(c.notify_threshold),
+  });
+});
+
+router.get('/balance', async (req, res) => {
+  const rows = await query(
+    `SELECT id, balance, credit_limit, notify_threshold, status FROM companies WHERE id = :id`,
+    { id: req.crmCompany.id },
+  );
+  const c = rows[0];
+  const balance = Number(c.balance);
+  res.json({
+    companyId: c.id,
+    balance,
+    creditLimit: Number(c.credit_limit),
+    available: balance + Number(c.credit_limit || 0),
+    notifyThreshold: Number(c.notify_threshold),
+    status: c.status,
+  });
+});
+
+/** Проекты компании */
+router.get('/projects', async (req, res) => {
+  const rows = await query(
+    `SELECT id, name, status, description, created_at
+     FROM projects WHERE company_id = :company_id ORDER BY id DESC`,
+    { company_id: req.crmCompany.id },
+  );
+  res.json({
+    items: rows.map((p) => ({
+      id: p.id,
+      name: p.name,
+      status: p.status,
+      description: p.description,
+      createdAt: p.created_at,
+    })),
+  });
+});
+
+/** Все операции по компании */
+router.get('/transactions', async (req, res) => {
+  const rows = await loadTransactions(req.crmCompany.id, {
+    limit: req.query.limit,
+    from: req.query.from,
+    to: req.query.to,
+  });
+  res.json({ items: rows.map(mapTx) });
+});
+
+/**
+ * Звонки по вашим заказам/проектам
+ * (списания по услуге call_minute)
+ */
+router.get('/calls', async (req, res) => {
+  const rows = await loadTransactions(req.crmCompany.id, {
+    serviceCodes: ['call_minute'],
+    limit: req.query.limit,
+    from: req.query.from,
+    to: req.query.to,
+  });
+  res.json({
+    items: rows.map((r) => ({
+      id: r.id,
+      minutes: r.quantity != null ? Number(r.quantity) : null,
+      amount: Number(r.amount),
+      unitPrice: r.unit_price != null ? Number(r.unit_price) : null,
+      projectId: r.project_id,
+      projectName: r.project_name || null,
+      employeeName: r.employee_name,
+      comment: r.comment,
+      crmEventId: r.crm_event_id,
+      createdAt: r.created_at,
+    })),
+  });
+});
+
+/**
+ * Заявки / лиды по вашим проектам
+ */
+router.get('/leads', async (req, res) => {
+  const rows = await loadTransactions(req.crmCompany.id, {
+    serviceCodes: ['confirmed_lead', 'processed_lead'],
+    limit: req.query.limit,
+    from: req.query.from,
+    to: req.query.to,
+  });
+  res.json({
+    items: rows.map((r) => ({
+      id: r.id,
+      type: r.service_code,
+      typeName: r.service_name,
+      quantity: r.quantity != null ? Number(r.quantity) : 1,
+      amount: Number(r.amount),
+      projectId: r.project_id,
+      projectName: r.project_name || null,
+      employeeName: r.employee_name,
+      comment: r.comment,
+      crmEventId: r.crm_event_id,
+      createdAt: r.created_at,
+    })),
+  });
+});
+
+/** Счета компании */
+router.get('/invoices', async (req, res) => {
+  const rows = await query(
+    `SELECT id, number, amount, status, purpose, paid_amount, created_at, paid_at, project_id
+     FROM invoices WHERE company_id = :company_id ORDER BY id DESC LIMIT 100`,
+    { company_id: req.crmCompany.id },
+  );
+  res.json({
+    items: rows.map((i) => ({
+      id: i.id,
+      number: i.number,
+      amount: Number(i.amount),
+      paidAmount: Number(i.paid_amount),
+      status: i.status,
+      purpose: i.purpose,
+      projectId: i.project_id,
+      createdAt: i.created_at,
+      paidAt: i.paid_at,
+    })),
+  });
+});
+
+/** Справочник услуг и актуальные тарифы для компании */
+router.get('/services', async (req, res) => {
+  const services = await query(
+    `SELECT id, code, name, unit, description FROM services WHERE is_active = 1 ORDER BY id`,
+  );
+  const items = [];
+  for (const s of services) {
+    const tariff = await getEffectiveTariff({
+      companyId: req.crmCompany.id,
+      projectId: req.query.projectId ? Number(req.query.projectId) : null,
+      serviceId: s.id,
+    });
+    items.push({
+      code: s.code,
+      name: s.name,
+      unit: s.unit,
+      description: s.description,
+      price: tariff ? Number(tariff.price) : null,
+      billingType: tariff?.billing_type || null,
+    });
+  }
+  res.json({ items });
+});
+
+/**
+ * Списание за действие в CRM (идемпотентно по eventId)
+ */
+router.post('/events', async (req, res) => {
   const payload = req.body || {};
   const eventId = String(payload.eventId || payload.crm_event_id || '').trim();
+  const companyId = req.crmCompany.id;
 
   try {
     if (!eventId) {
@@ -21,6 +236,12 @@ router.post('/events', crmAuth, async (req, res) => {
         { payload: JSON.stringify(payload) },
       );
       return res.status(400).json({ error: 'eventId обязателен' });
+    }
+
+    if (payload.companyId != null && Number(payload.companyId) !== companyId) {
+      return res.status(403).json({
+        error: 'companyId не совпадает с компанией API-ключа',
+      });
     }
 
     const dup = await query(
@@ -36,19 +257,14 @@ router.post('/events', crmAuth, async (req, res) => {
       return res.json({ ok: true, duplicate: true });
     }
 
-    const companyId = Number(payload.companyId);
     const projectId = payload.projectId ? Number(payload.projectId) : null;
     const serviceCode = String(payload.serviceCode || '').trim();
     const quantity = Number(payload.quantity || 1);
     const employeeName = payload.employeeName || null;
 
-    if (!companyId || !serviceCode || !(quantity > 0)) {
-      throw new Error('companyId, serviceCode и quantity обязательны');
+    if (!serviceCode || !(quantity > 0)) {
+      throw new Error('serviceCode и quantity обязательны');
     }
-
-    const companies = await query('SELECT * FROM companies WHERE id = :id', { id: companyId });
-    const company = companies[0];
-    if (!company) throw new Error('Компания не найдена');
 
     if (projectId) {
       const projects = await query(
@@ -57,7 +273,7 @@ router.post('/events', crmAuth, async (req, res) => {
       );
       const project = projects[0];
       if (!project) throw new Error('Проект не найден');
-      if (project.status === 'paused' && company.low_balance_action === 'hard_stop') {
+      if (project.status === 'paused' && req.crmCompany.low_balance_action === 'hard_stop') {
         throw new Error('Проект приостановлен из-за баланса');
       }
     }
@@ -95,7 +311,7 @@ router.post('/events', crmAuth, async (req, res) => {
     await query(
       `INSERT INTO crm_event_log (event_id, payload, status)
        VALUES (:event_id, :payload, 'processed')`,
-      { event_id: eventId, payload: JSON.stringify(payload) },
+      { event_id: eventId, payload: JSON.stringify({ ...payload, companyId }) },
     );
 
     const updated = await query('SELECT balance, notify_threshold FROM companies WHERE id = :id', {

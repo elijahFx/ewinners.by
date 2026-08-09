@@ -9,6 +9,12 @@ export function setToken(token) {
   else localStorage.removeItem('ew_token');
 }
 
+export function mediaUrl(path) {
+  if (!path) return '';
+  if (/^https?:\/\//i.test(path)) return path;
+  return `${API_BASE}${path.startsWith('/') ? path : `/${path}`}`;
+}
+
 export async function api(path, options = {}) {
   const headers = {
     ...(options.body && !(options.body instanceof FormData)
@@ -41,7 +47,6 @@ export async function api(path, options = {}) {
 export function downloadUrl(path) {
   const token = getToken();
   const url = new URL(`${API_BASE}${path}`, window.location.origin);
-  // browser download with auth header needs fetch blob; helpers use apiDownload
   return { url: url.toString(), token };
 }
 
@@ -57,4 +62,19 @@ export async function apiDownload(path, filename) {
   a.download = filename || 'download';
   a.click();
   URL.revokeObjectURL(a.href);
+}
+
+export async function apiOpen(path) {
+  const token = getToken();
+  const res = await fetch(`${API_BASE}${path}`, {
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data.error || 'Не удалось открыть файл');
+  }
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  window.open(url, '_blank', 'noopener,noreferrer');
+  setTimeout(() => URL.revokeObjectURL(url), 60_000);
 }

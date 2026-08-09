@@ -123,18 +123,7 @@ export async function debitBalance(params) {
   return withTransaction((conn) => applyBalanceChange({ ...params, conn, type: 'debit' }));
 }
 
-export async function notifyCompanyUsers(companyId, title, body) {
-  const users = await query(
-    `SELECT id FROM users WHERE company_id = :company_id AND status = 'active'`,
-    { company_id: companyId },
-  );
-  for (const u of users) {
-    await query(
-      `INSERT INTO notifications (user_id, title, body) VALUES (:user_id, :title, :body)`,
-      { user_id: u.id, title, body },
-    );
-  }
-}
+export { notifyCompanyUsers } from './notify.js';
 
 export async function audit(userId, action, entityType, entityId, details) {
   await query(

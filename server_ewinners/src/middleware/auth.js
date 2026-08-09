@@ -22,7 +22,8 @@ export async function authRequired(req, res, next) {
 
     const payload = jwt.verify(token, config.jwtSecret);
     const users = await query(
-      `SELECT id, email, phone, full_name, role, company_id, status, token_version, must_set_password
+      `SELECT id, email, phone, full_name, avatar_url, role, company_id, status, token_version, must_set_password,
+              notify_email, notify_telegram, telegram_chat_id
        FROM users WHERE id = :id LIMIT 1`,
       { id: payload.sub },
     );
@@ -49,10 +50,33 @@ export function requireRoles(...roles) {
   };
 }
 
-export function crmAuth(req, res, next) {
-  const key = req.headers['x-api-key'] || req.query.api_key;
-  if (!key || key !== config.crmApiKey) {
-    return res.status(401).json({ error: 'Неверный CRM API key' });
+export async function crmAuth(req, res, next) {
+  try {
+    const key = String(req.headers['x-api-key'] || req.query.api_key || '').trim();
+    if (!key) {
+      return res.status(401).json({ error: 'Требуется X-Api-Key' });
+    }
+
+    const rows = await query(
+      `SELECT id, name, unp, status, balance, credit_limit, notify_threshold, low_balance_action,
+              api_key, api_key_created_at
+       FROM companies
+       WHERE api_key = :api_key
+       LIMIT 1`,
+      { api_key: key },
+    );
+    const company = rows[0];
+    if (!company) {
+      return res.status(401).json({ error: 'Неверный CRM API key' });
+    }
+    if (company.status === 'blocked') {
+      return res.status(403).json({ error: 'Компания заблокирована' });
+    }
+
+    req.crmCompany = company;
+    next();
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ error: 'Ошибка авторизации CRM' });
   }
-  next();
 }

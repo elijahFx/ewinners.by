@@ -1,7 +1,9 @@
 import { useEffect, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import Layout from '../components/Layout'
+import LoadingScreen from '../components/LoadingScreen'
 import { useAuth } from '../cabinet/AuthContext'
+import { CHALLENGE_KEY } from './TwoFaPage'
 
 export default function AccountPage() {
   const { login, user, loading } = useAuth()
@@ -13,7 +15,14 @@ export default function AccountPage() {
 
   useEffect(() => {
     if (!loading && user) {
-      navigate(user.role === 'client' ? '/cabinet' : '/cabinet/admin', { replace: true })
+      navigate(
+        user.mustSetupTelegram2fa
+          ? '/account/security'
+          : user.role === 'client'
+            ? '/cabinet'
+            : '/cabinet/admin',
+        { replace: true },
+      )
     }
   }, [user, loading, navigate])
 
@@ -22,13 +31,37 @@ export default function AccountPage() {
     setBusy(true)
     setError('')
     try {
-      const logged = await login(email, password)
-      navigate(logged.role === 'client' ? '/cabinet' : '/cabinet/admin', { replace: true })
+      const result = await login(email, password)
+      if (result?.requires2fa) {
+        sessionStorage.setItem(CHALLENGE_KEY, result.challengeId)
+        navigate('/account/2fa', { replace: true })
+        return
+      }
+      navigate(
+        result.mustSetupTelegram2fa
+          ? '/account/security'
+          : result.role === 'client'
+            ? '/cabinet'
+            : '/cabinet/admin',
+        { replace: true },
+      )
     } catch (err) {
       setError(err.message || 'Ошибка входа')
     } finally {
       setBusy(false)
     }
+  }
+
+  if (loading) {
+    return <LoadingScreen label="Проверяем сессию…" />
+  }
+
+  if (busy) {
+    return <LoadingScreen label="Вход…" />
+  }
+
+  if (user) {
+    return <LoadingScreen label="Переход в кабинет…" />
   }
 
   return (
@@ -55,7 +88,11 @@ export default function AccountPage() {
               Войдите, чтобы видеть баланс, формировать счета и контролировать списания по проекту.
             </p>
 
-            <form className="contact-form" onSubmit={onSubmit} style={{ marginTop: 24, position: 'relative', zIndex: 2 }}>
+            <form
+              className="contact-form"
+              onSubmit={onSubmit}
+              style={{ marginTop: 24, position: 'relative', zIndex: 2 }}
+            >
               <label>
                 Email
                 <input
@@ -65,6 +102,7 @@ export default function AccountPage() {
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
                   required
+                  autoComplete="username"
                 />
               </label>
               <label>
@@ -76,12 +114,19 @@ export default function AccountPage() {
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   required
+                  autoComplete="current-password"
                 />
               </label>
               {error && <p style={{ color: '#ffb4b4', margin: 0 }}>{error}</p>}
-              <button className="primary-button" type="submit" disabled={busy}>
-                {busy ? 'Вход…' : 'Войти'}
+              <button className="primary-button" type="submit">
+                Войти
               </button>
+              <Link
+                to="/account/forgot"
+                style={{ color: '#8fd2ff', fontWeight: 700, textDecoration: 'none' }}
+              >
+                Забыли пароль?
+              </Link>
             </form>
 
             <div className="hero-actions" style={{ marginTop: 18 }}>

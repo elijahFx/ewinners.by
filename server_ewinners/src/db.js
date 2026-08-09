@@ -26,6 +26,14 @@ export const config = {
     bic: process.env.COMPANY_BIC || '',
     accountantPhone: process.env.COMPANY_ACCOUNTANT_PHONE || '+375 (25) 505-69-17',
   },
+  mail: {
+    host: process.env.SMTP_HOST || '',
+    port: Number(process.env.SMTP_PORT || 587),
+    user: process.env.SMTP_USER || '',
+    pass: process.env.SMTP_PASS || '',
+    from: process.env.SMTP_FROM || '',
+  },
+  telegramBotToken: process.env.TELEGRAM_BOT_TOKEN || '',
   db: {
     host: process.env.DB_HOST,
     port: Number(process.env.DB_PORT || 3306),

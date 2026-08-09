@@ -28,10 +28,14 @@ const statements = [
     phone VARCHAR(64) NULL,
     password_hash VARCHAR(255) NOT NULL,
     full_name VARCHAR(255) NOT NULL,
+    avatar_url VARCHAR(512) NULL,
     role ENUM('admin','accountant','manager','client') NOT NULL DEFAULT 'client',
     company_id INT NULL,
     status ENUM('active','blocked','invited') NOT NULL DEFAULT 'active',
     must_set_password TINYINT(1) NOT NULL DEFAULT 0,
+    notify_email TINYINT(1) NOT NULL DEFAULT 1,
+    notify_telegram TINYINT(1) NOT NULL DEFAULT 0,
+    telegram_chat_id VARCHAR(64) NULL,
     token_version INT NOT NULL DEFAULT 0,
     last_login_at DATETIME NULL,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -181,12 +185,57 @@ const statements = [
     details JSON NULL,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+
+  `CREATE TABLE IF NOT EXISTS login_challenges (
+    id VARCHAR(64) PRIMARY KEY,
+    user_id INT NOT NULL,
+    code_hash VARCHAR(255) NOT NULL,
+    expires_at DATETIME NOT NULL,
+    attempts INT NOT NULL DEFAULT 0,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT fk_login_chal_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    KEY idx_login_chal_user (user_id),
+    KEY idx_login_chal_exp (expires_at)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+
+  `CREATE TABLE IF NOT EXISTS auth_tokens (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    user_id INT NOT NULL,
+    type ENUM('invite','password_reset') NOT NULL,
+    token_hash VARCHAR(64) NOT NULL,
+    expires_at DATETIME NOT NULL,
+    used_at DATETIME NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY uq_auth_token_hash (token_hash),
+    KEY idx_auth_tokens_user_type (user_id, type),
+    CONSTRAINT fk_auth_tokens_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
 ];
+
+async function ensureColumn(table, column, definition) {
+  const [rows] = await pool.query(
+    `SELECT COUNT(*) AS c
+     FROM information_schema.COLUMNS
+     WHERE TABLE_SCHEMA = DATABASE()
+       AND TABLE_NAME = ?
+       AND COLUMN_NAME = ?`,
+    [table, column],
+  );
+  if (Number(rows[0]?.c) === 0) {
+    await pool.execute(`ALTER TABLE \`${table}\` ADD COLUMN \`${column}\` ${definition}`);
+  }
+}
 
 export async function migrate() {
   for (const sql of statements) {
     await pool.execute(sql);
   }
+  await ensureColumn('users', 'avatar_url', 'VARCHAR(512) NULL AFTER full_name');
+  await ensureColumn('users', 'notify_email', 'TINYINT(1) NOT NULL DEFAULT 1 AFTER must_set_password');
+  await ensureColumn('users', 'notify_telegram', 'TINYINT(1) NOT NULL DEFAULT 0 AFTER notify_email');
+  await ensureColumn('users', 'telegram_chat_id', 'VARCHAR(64) NULL AFTER notify_telegram');
+  await ensureColumn('companies', 'api_key', 'VARCHAR(96) NULL UNIQUE AFTER manager_email');
+  await ensureColumn('companies', 'api_key_created_at', 'DATETIME NULL AFTER api_key');
 }
 
 if (import.meta.url === `file://${process.argv[1]}` || process.argv[1]?.endsWith('migrate.js')) {

@@ -1,0 +1,12 @@
+@import "tailwindcss/theme.css" layer(theme);
+@import "tailwindcss/utilities.css" layer(utilities) important;
+
+@theme {
+  --color-ew-bg: #071529;
+  --color-ew-panel: #102a4a;
+  --color-ew-line: #2a5f8f;
+  --color-ew-text: #f3f8ff;
+  --color-ew-muted: #9db8d4;
+  --color-ew-blue: #3b9eff;
+  --color-ew-danger: #ff5c5c;
+}

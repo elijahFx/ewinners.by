@@ -4,6 +4,11 @@ import CallCenterPage from './pages/CallCenterPage'
 import HRPage from './pages/HRPage'
 import MarketingPage from './pages/MarketingPage'
 import AccountPage from './pages/AccountPage'
+import TwoFaPage from './pages/TwoFaPage'
+import SecuritySetupPage from './pages/SecuritySetupPage'
+import ForgotPasswordPage from './pages/ForgotPasswordPage'
+import ResetPasswordPage from './pages/ResetPasswordPage'
+import InviteAcceptPage from './pages/InviteAcceptPage'
 import { AuthProvider } from './cabinet/AuthContext'
 import ProtectedRoute from './cabinet/ProtectedRoute'
 import CabinetLayout from './cabinet/CabinetLayout'
@@ -14,12 +19,14 @@ import DocumentsPage from './cabinet/pages/DocumentsPage'
 import TariffsPage from './cabinet/pages/TariffsPage'
 import CompanyPage from './cabinet/pages/CompanyPage'
 import NotificationsPage from './cabinet/pages/NotificationsPage'
+import CrmIntegrationPage from './cabinet/pages/CrmIntegrationPage'
 import AdminOverviewPage from './cabinet/pages/admin/AdminOverviewPage'
 import AdminCompaniesPage from './cabinet/pages/admin/AdminCompaniesPage'
 import AdminUsersPage from './cabinet/pages/admin/AdminUsersPage'
 import AdminProjectsPage from './cabinet/pages/admin/AdminProjectsPage'
 import AdminPaymentsPage from './cabinet/pages/admin/AdminPaymentsPage'
 import AdminBalancePage from './cabinet/pages/admin/AdminBalancePage'
+import AdminApiKeysPage from './cabinet/pages/admin/AdminApiKeysPage'
 
 export default function App() {
   return (
@@ -34,6 +41,16 @@ export default function App() {
         <Route path="/target/" element={<MarketingPage />} />
         <Route path="/account" element={<AccountPage />} />
         <Route path="/account/" element={<AccountPage />} />
+        <Route path="/account/2fa" element={<TwoFaPage />} />
+        <Route path="/account/2fa/" element={<TwoFaPage />} />
+        <Route path="/account/security" element={<SecuritySetupPage />} />
+        <Route path="/account/security/" element={<SecuritySetupPage />} />
+        <Route path="/account/forgot" element={<ForgotPasswordPage />} />
+        <Route path="/account/forgot/" element={<ForgotPasswordPage />} />
+        <Route path="/account/reset" element={<ResetPasswordPage />} />
+        <Route path="/account/reset/" element={<ResetPasswordPage />} />
+        <Route path="/account/invite" element={<InviteAcceptPage />} />
+        <Route path="/account/invite/" element={<InviteAcceptPage />} />
 
         <Route
           path="/cabinet"
@@ -99,6 +116,14 @@ export default function App() {
               </ProtectedRoute>
             }
           />
+          <Route
+            path="crm"
+            element={
+              <ProtectedRoute roles={['client']}>
+                <CrmIntegrationPage />
+              </ProtectedRoute>
+            }
+          />
 
           <Route
             path="admin"
@@ -145,6 +170,14 @@ export default function App() {
             element={
               <ProtectedRoute roles={['admin', 'accountant']}>
                 <AdminBalancePage />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="admin/api-keys"
+            element={
+              <ProtectedRoute roles={['admin', 'accountant']}>
+                <AdminApiKeysPage />
               </ProtectedRoute>
             }
           />

@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react'
-import { api, apiDownload } from '../api'
+import { api, apiDownload, apiOpen } from '../api'
+import { useAuth } from '../AuthContext'
+import EmailSendModal from '../EmailSendModal'
 
 function money(v) {
   return `${Number(v || 0).toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} BYN`
@@ -16,9 +18,11 @@ const statusMap = {
 }
 
 export default function InvoicesPage() {
+  const { user } = useAuth()
   const [items, setItems] = useState([])
   const [amount, setAmount] = useState('1000')
   const [busy, setBusy] = useState(false)
+  const [emailTarget, setEmailTarget] = useState(null)
 
   async function load() {
     const data = await api('/api/cabinet/invoices')
@@ -48,7 +52,7 @@ export default function InvoicesPage() {
       <div className="cab-page-head">
         <div>
           <h1>Счета на оплату</h1>
-          <p>Формируйте счета для пополнения авансового баланса банковским переводом.</p>
+          <p>После оплаты доступен акт с тем же номером. Документы можно смотреть и отправлять на email.</p>
         </div>
       </div>
 
@@ -86,13 +90,47 @@ export default function InvoicesPage() {
                     <td>{money(i.amount)}</td>
                     <td><span className="cab-chip">{statusMap[i.status] || i.status}</span></td>
                     <td>
-                      <button
-                        type="button"
-                        className="cab-btn ghost"
-                        onClick={() => apiDownload(`/api/cabinet/invoices/${i.id}/download`, `${i.number}.pdf`)}
-                      >
-                        Скачать
-                      </button>
+                      <div className="cab-actions">
+                        <button
+                          type="button"
+                          className="cab-btn ghost"
+                          onClick={() => apiOpen(`/api/cabinet/invoices/${i.id}/view`).catch((e) => alert(e.message))}
+                        >
+                          Смотреть
+                        </button>
+                        <button
+                          type="button"
+                          className="cab-btn ghost"
+                          onClick={() => apiDownload(`/api/cabinet/invoices/${i.id}/download`, `${i.number}.pdf`)}
+                        >
+                          Скачать
+                        </button>
+                        <button type="button" className="cab-btn ghost" onClick={() => setEmailTarget(i)}>
+                          Email
+                        </button>
+                        {i.status === 'paid' && (
+                          <>
+                            <button
+                              type="button"
+                              className="cab-btn primary"
+                              onClick={() =>
+                                apiOpen(`/api/cabinet/invoices/${i.id}/act?mode=view`).catch((e) => alert(e.message))
+                              }
+                            >
+                              Акт
+                            </button>
+                            <button
+                              type="button"
+                              className="cab-btn ghost"
+                              onClick={() =>
+                                apiDownload(`/api/cabinet/invoices/${i.id}/act`, `act-${i.number}.pdf`)
+                              }
+                            >
+                              Скачать акт
+                            </button>
+                          </>
+                        )}
+                      </div>
                     </td>
                   </tr>
                 ))}
@@ -102,6 +140,20 @@ export default function InvoicesPage() {
           </div>
         </div>
       </div>
+
+      <EmailSendModal
+        open={Boolean(emailTarget)}
+        defaultEmail={user?.email || ''}
+        title={emailTarget ? `Отправить счёт ${emailTarget.number}` : 'Отправить на email'}
+        onClose={() => setEmailTarget(null)}
+        onSend={async (email) => {
+          const result = await api(`/api/cabinet/invoices/${emailTarget.id}/email`, {
+            method: 'POST',
+            body: { email },
+          })
+          alert(`Отправлено на ${result.to}`)
+        }}
+      />
     </>
   )
 }

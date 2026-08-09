@@ -1,9 +1,18 @@
 import { useState } from 'react'
-import { Link } from 'react-router-dom'
-import { Menu, PhoneCall, X } from 'lucide-react'
+import { Link, useNavigate } from 'react-router-dom'
+import { LogOut, Menu, PhoneCall, X } from 'lucide-react'
+import { useAuth } from '../cabinet/AuthContext'
 
 export default function Header({ contactHref = '#contact' }) {
   const [open, setOpen] = useState(false)
+  const { user, logout, loading } = useAuth()
+  const navigate = useNavigate()
+
+  function doLogout() {
+    logout()
+    setOpen(false)
+    navigate('/account')
+  }
 
   return (
     <header className="header">
@@ -22,6 +31,16 @@ export default function Header({ contactHref = '#contact' }) {
         <Link to="/target" onClick={() => setOpen(false)}>
           Маркетинг
         </Link>
+        {user && (
+          <>
+            <Link to="/cabinet" onClick={() => setOpen(false)}>
+              Личный кабинет
+            </Link>
+            <button type="button" className="nav-logout" onClick={doLogout}>
+              Выйти
+            </button>
+          </>
+        )}
       </nav>
 
       <div className="header-actions">
@@ -32,9 +51,21 @@ export default function Header({ contactHref = '#contact' }) {
         <a className="primary-button small" href={contactHref} onClick={() => setOpen(false)}>
           Оставить заявку
         </a>
-        <Link className="account-button" to="/account" onClick={() => setOpen(false)}>
-          Войти в личный кабинет
-        </Link>
+        {!loading && user ? (
+          <>
+            <Link className="account-button" to="/cabinet" onClick={() => setOpen(false)}>
+              Кабинет
+            </Link>
+            <button type="button" className="account-button logout-button" onClick={doLogout}>
+              <LogOut size={16} aria-hidden="true" />
+              Выйти
+            </button>
+          </>
+        ) : (
+          <Link className="account-button" to="/account" onClick={() => setOpen(false)}>
+            Войти в личный кабинет
+          </Link>
+        )}
         <button
           className="menu-button"
           type="button"

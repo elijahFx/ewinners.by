@@ -31,15 +31,37 @@ export function AuthProvider({ children }) {
     refresh().finally(() => setLoading(false))
   }, [])
 
+  async function applySession(data) {
+    setToken(data.token)
+    setUser(data.user)
+    await refresh()
+    return data.user
+  }
+
   async function login(email, password) {
     const data = await api('/api/auth/login', {
       method: 'POST',
       body: { email, password },
     })
-    setToken(data.token)
-    setUser(data.user)
-    await refresh()
-    return data.user
+    if (data.requires2fa) {
+      return data
+    }
+    return applySession(data)
+  }
+
+  async function verify2fa(challengeId, code) {
+    const data = await api('/api/auth/2fa/verify', {
+      method: 'POST',
+      body: { challengeId, code },
+    })
+    return applySession(data)
+  }
+
+  async function resend2fa(challengeId) {
+    return api('/api/auth/2fa/resend', {
+      method: 'POST',
+      body: { challengeId },
+    })
   }
 
   function logout() {
@@ -49,7 +71,17 @@ export function AuthProvider({ children }) {
   }
 
   const value = useMemo(
-    () => ({ user, company, loading, login, logout, refresh, setCompany }),
+    () => ({
+      user,
+      company,
+      loading,
+      login,
+      verify2fa,
+      resend2fa,
+      logout,
+      refresh,
+      setCompany,
+    }),
     [user, company, loading],
   )
 

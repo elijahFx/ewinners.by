@@ -11,12 +11,16 @@ import {
   Users,
   FolderKanban,
   ArrowLeftRight,
+  Cable,
+  KeyRound,
+  ShieldCheck,
 } from 'lucide-react'
 import { useAuth } from './AuthContext'
+import { api, mediaUrl } from './api'
 import './cabinet.css'
 
 export default function CabinetLayout() {
-  const { user, logout } = useAuth()
+  const { user, logout, refresh } = useAuth()
   const navigate = useNavigate()
   const isStaff = user && ['admin', 'accountant'].includes(user.role)
 
@@ -28,6 +32,7 @@ export default function CabinetLayout() {
     { to: '/cabinet/tariffs', label: 'Тарифы', icon: Wallet },
     { to: '/cabinet/company', label: 'Реквизиты', icon: Building2 },
     { to: '/cabinet/notifications', label: 'Уведомления', icon: Bell },
+    { to: '/cabinet/crm', label: 'Интеграция CRM', icon: Cable },
   ]
 
   const adminLinks = [
@@ -37,45 +42,67 @@ export default function CabinetLayout() {
     { to: '/cabinet/admin/projects', label: 'Проекты', icon: FolderKanban },
     { to: '/cabinet/admin/payments', label: 'Платежи', icon: Receipt },
     { to: '/cabinet/admin/balance', label: 'Корректировки', icon: Wallet },
+    { to: '/cabinet/admin/api-keys', label: 'API-ключи', icon: KeyRound },
+    ...(user?.role === 'admin'
+      ? [{ to: '/account/security', label: 'Безопасность', icon: ShieldCheck }]
+      : []),
   ]
 
   const links = isStaff ? adminLinks : clientLinks
+
+  function doLogout() {
+    logout()
+    navigate('/account')
+  }
+
+  async function onAvatarChange(e) {
+    const file = e.target.files?.[0]
+    if (!file) return
+    const fd = new FormData()
+    fd.append('avatar', file)
+    try {
+      await api('/api/auth/avatar', { method: 'POST', body: fd })
+      await refresh()
+    } catch (err) {
+      alert(err.message)
+    } finally {
+      e.target.value = ''
+    }
+  }
 
   return (
     <div className="cab-shell">
       <aside className="cab-sidebar">
         <div className="cab-brand">
           <img src="/e-winners-logo.jpeg" alt="" />
-          <div>
-            <strong>E-Winners</strong>
-            <span>Личный кабинет</span>
-          </div>
+          <strong>E-Winners</strong>
         </div>
 
         <nav className="cab-nav">
           {links.map(({ to, end, label, icon: Icon }) => (
             <NavLink key={to} to={to} end={end} className={({ isActive }) => (isActive ? 'active' : '')}>
-              <Icon size={18} />
-              {label}
+              <Icon size={17} />
+              <span>{label}</span>
             </NavLink>
           ))}
         </nav>
 
         <div className="cab-sidebar-foot">
-          <div className="cab-user">
-            <strong>{user?.fullName}</strong>
-            <span>{user?.email}</span>
-            <em>{user?.role}</em>
-          </div>
-          <button
-            type="button"
-            className="cab-logout"
-            onClick={() => {
-              logout()
-              navigate('/account')
-            }}
-          >
-            <LogOut size={16} /> Выйти
+          <label className="cab-user" title="Сменить аватар">
+            {user?.avatarUrl ? (
+              <img className="cab-user-avatar" src={mediaUrl(user.avatarUrl)} alt="" />
+            ) : (
+              <span className="cab-user-avatar">{(user?.fullName || '?').slice(0, 1)}</span>
+            )}
+            <span className="cab-user-meta">
+              <strong>{user?.fullName}</strong>
+              <em>{user?.role}</em>
+            </span>
+            <input type="file" accept="image/*" hidden onChange={onAvatarChange} />
+          </label>
+          <button type="button" className="cab-logout" onClick={doLogout} title="Выйти">
+            <LogOut size={15} />
+            <span>Выйти</span>
           </button>
         </div>
       </aside>

@@ -39,6 +39,18 @@ img { max-width: 100%; }
 .header-actions { display: flex; align-items: center; gap: 8px; }
 .phone-link { display: inline-flex; align-items: center; gap: 8px; min-height: 40px; padding: 0px 12px; border-radius: 999px; color: var(--primary); font-size: 0.93rem; font-weight: 800; white-space: nowrap; }
 .account-button { display: inline-flex; align-items: center; justify-content: center; min-height: 40px; padding: 0px 14px; border: 1px solid var(--line-strong); border-radius: 999px; color: var(--primary); background: rgba(255, 255, 255, 0.72); font-size: 0.88rem; font-weight: 800; white-space: nowrap; transition: transform 0.18s, border-color 0.18s, background 0.18s; }
+.logout-button { gap: 8px; }
+.nav-logout {
+  display: none;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+  text-align: left;
+  padding: 0;
+}
 .secondary-button, .primary-button, .menu-button { display: inline-flex; align-items: center; justify-content: center; gap: 8px; border: 0px; border-radius: 999px; min-height: 44px; cursor: pointer; transition: transform 0.18s, box-shadow 0.18s, border-color 0.18s, background 0.18s; }
 .primary-button { padding: 0px 22px; color: var(--white); background: linear-gradient(135deg,var(--blue),var(--blue-strong)); box-shadow: rgba(18, 103, 221, 0.24) 0px 14px 30px; font-weight: 700; }
 .primary-button:disabled { cursor: wait; opacity: 0.72; }
@@ -549,6 +561,14 @@ h3 { color: var(--primary); font-size: 1.45rem; line-height: 1.15; letter-spacin
   .header .nav.is-open { position: absolute; top: calc(100% + 12px); right: 0px; left: 0px; z-index: 1; display: grid; gap: 2px; padding: 10px; border: 1px solid rgba(213, 220, 235, 0.9); border-radius: 16px; color: var(--primary); background: rgba(255, 255, 255, 0.97); box-shadow: rgba(8, 3, 49, 0.18) 0px 20px 46px; backdrop-filter: blur(18px); }
   .header .nav.is-open a { padding: 13px 14px; border-radius: 10px; font-size: 1rem; font-weight: 700; }
   .header .nav.is-open a:hover { color: var(--blue); background: var(--blue-wash); }
+  .header .nav.is-open .nav-logout {
+    display: block;
+    padding: 13px 14px;
+    border-radius: 10px;
+    font-size: 1rem;
+    font-weight: 700;
+    color: inherit;
+  }
   .home-shell .header .nav.is-open { border-color: rgba(127, 195, 255, 0.25); color: rgb(243, 248, 255); background: rgba(3, 10, 28, 0.96); box-shadow: rgba(0, 5, 20, 0.42) 0px 20px 46px; }
   .home-shell .header .nav.is-open a:hover { color: rgb(169, 220, 255); background: rgba(72, 157, 255, 0.14); }
   .hero-grid, .hr-hero, .about-grid, .call-center-intro, .hr-proof, .seo-service-blocks, .journey-layout, .contact-section { grid-template-columns: 1fr; }

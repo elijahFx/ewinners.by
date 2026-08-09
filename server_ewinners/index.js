@@ -11,6 +11,8 @@ import cabinetRoutes from './src/routes/cabinet.js';
 import adminRoutes from './src/routes/admin.js';
 import crmRoutes from './src/routes/crm.js';
 import lookupRoutes from './src/routes/lookup.js';
+import telegramRoutes from './src/routes/telegram.js';
+import { startTelegramBot } from './src/services/telegramBot.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -33,6 +35,7 @@ app.use('/api/cabinet', cabinetRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/crm', crmRoutes);
 app.use('/api/lookup', lookupRoutes);
+app.use('/api/telegram', telegramRoutes);
 
 app.use((err, _req, res, _next) => {
   console.error(err);
@@ -46,6 +49,9 @@ async function start() {
   await migrate();
   refreshBanksFromNbrb().then((banks) => {
     console.log(`Bank directory loaded: ${Object.keys(banks).length} codes`);
+  });
+  startTelegramBot().catch((err) => {
+    console.error('Telegram bot failed to start:', err);
   });
 
   // Passenger (Plesk) manages the port itself

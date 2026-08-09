@@ -7,7 +7,25 @@ import { config } from '../db.js';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const docsDir = path.join(__dirname, '../../uploads/documents');
 const fontsDir = path.join(__dirname, '../../assets/fonts');
-const logoPath = path.join(__dirname, '../../assets/e-winners-logo.jpeg');
+const assetsDir = path.join(__dirname, '../../assets');
+const LOGO_CANDIDATES = [
+  process.env.INVOICE_LOGO_PATH,
+  path.join(assetsDir, 'e-winners-logo.png'),
+  path.join(assetsDir, 'e-winners-logo-baseline.jpg'),
+  path.join(assetsDir, 'e-winners-logo.jpeg'),
+  path.join(__dirname, '../../../ewinners.by/public/e-winners-logo.jpeg'),
+].filter(Boolean);
+
+function resolveLogo() {
+  for (const file of LOGO_CANDIDATES) {
+    try {
+      if (fs.existsSync(file) && fs.statSync(file).size > 1000) return file;
+    } catch {
+      // continue
+    }
+  }
+  return null;
+}
 
 const FONT_CANDIDATES = [
   path.join(fontsDir, 'DejaVuSans.ttf'),
@@ -87,13 +105,16 @@ export async function generateInvoicePdf({ number, amount, purpose, company, cre
     const pageWidth = doc.page.width;
     const width = pageWidth - 96;
 
-    // Header with logo
-    if (fs.existsSync(logoPath)) {
+    // Header with logo (prefer PNG / baseline JPEG — progressive JPEG often fails in PDFKit)
+    const logoPath = resolveLogo();
+    if (logoPath) {
       try {
         doc.image(logoPath, left, 40, { width: 52, height: 52 });
-      } catch {
-        // ignore image errors
+      } catch (err) {
+        console.warn('Invoice PDF logo failed:', logoPath, err.message);
       }
+    } else {
+      console.warn('Invoice PDF logo not found in', LOGO_CANDIDATES);
     }
 
     doc
