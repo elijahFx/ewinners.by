@@ -1,24 +1,10 @@
-# E-Winners (React)
+# E-Winners
 
-Точная React-копия сайта [ewinners.by](http://ewinners.by): главная, колл-центр, HR, маркетинг и страница входа.
-
-## Запуск
-
-```bash
-npm install
-npm run dev
+```
+ewinners.by/           # этот репозиторий
+  ewinners.by/         # фронтенд → Netlify
+  server_ewinners/     # бэкенд → хостинг
 ```
 
-Сборка:
-
-```bash
-npm run build
-npm run preview
-```
-
-## Стек
-
-- React 19 + Vite
-- React Router
-- Lucide icons
-- Оригинальные стили и ассеты с ewinners.by
+Фронт: `cd ewinners.by && npm install && npm run build`  
+Сервер: `cd server_ewinners && npm install && npm start`
