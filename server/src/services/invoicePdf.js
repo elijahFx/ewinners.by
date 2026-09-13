@@ -70,6 +70,9 @@ function money(amount) {
 
 export async function generateInvoicePdf({ number, amount, purpose, company, createdAt }) {
   ensureDocsDir();
+  if (!company?.name) {
+    throw new Error('Не указаны реквизиты плательщика для PDF');
+  }
   const fileName = `invoice-${number.replace(/[^\w.-]+/g, '_')}.pdf`;
   const filePath = path.join(docsDir, fileName);
 
@@ -149,8 +152,11 @@ export async function generateInvoicePdf({ number, amount, purpose, company, cre
     if (issuer.unp) doc.text(`УНП: ${issuer.unp}`);
     if (issuer.address) doc.text(issuer.address, { width });
     if (issuer.bank) doc.text(`Банк: ${issuer.bank}`);
+    else doc.text('Банк: — (уточните у менеджера E-Winners)');
     if (issuer.iban) doc.text(`IBAN: ${issuer.iban}`);
+    else doc.text('IBAN: — (уточните у менеджера E-Winners)');
     if (issuer.bic) doc.text(`БИК: ${issuer.bic}`);
+    else doc.text('БИК: —');
     doc.moveDown(0.8);
 
     // Payer
@@ -158,6 +164,7 @@ export async function generateInvoicePdf({ number, amount, purpose, company, cre
     doc.moveDown(0.25);
     doc.font('Bold').fontSize(10).fillColor('#111').text(company.name || '—', { width });
     doc.font('Regular').fontSize(10).fillColor('#333');
+    if (company.entity_type === 'ip') doc.text('Форма: ИП');
     if (company.unp) doc.text(`УНП: ${company.unp}`);
     if (company.legal_address) doc.text(company.legal_address, { width });
     if (company.bank_name) doc.text(`Банк: ${company.bank_name}`);
@@ -171,19 +178,24 @@ export async function generateInvoicePdf({ number, amount, purpose, company, cre
     doc.font('Regular').fontSize(10).fillColor('#333').text(purpose || '—', { width });
     doc.moveDown(0.6);
 
-    // Important note
+    // Important note — высота по тексту
     const noteY = doc.y;
     const noteText =
       `Важно: в назначении платежа обязательно укажите номер счёта ${number}. ` +
       `Без номера счёта зачисление денежных средств не будет выполнено автоматически — ` +
       `потребуется связаться с бухгалтером по телефону ${accountantPhone}.`;
-    doc.roundedRect(left, noteY, width, 68, 8).fillAndStroke('#fff7ed', '#fdba74');
+    doc.font('Bold').fontSize(9);
+    const noteHeight = Math.max(
+      68,
+      doc.heightOfString(noteText, { width: width - 24, lineGap: 2 }) + 20,
+    );
+    doc.roundedRect(left, noteY, width, noteHeight, 8).fillAndStroke('#fff7ed', '#fdba74');
     doc
       .fillColor('#9a3412')
       .font('Bold')
       .fontSize(9)
       .text(noteText, left + 12, noteY + 10, { width: width - 24, lineGap: 2 });
-    doc.y = noteY + 80;
+    doc.y = noteY + noteHeight + 12;
 
     // Amount
     const boxY = doc.y;

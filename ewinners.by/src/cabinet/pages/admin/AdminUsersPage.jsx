@@ -14,27 +14,27 @@ const emptyForm = {
   sendInvite: true,
 }
 
-const COLS_KEY = 'ew_admin_users_cols_v5'
-// Relative weights — table always stretches to 100% width
+const COLS_KEY = 'ew_admin_users_cols_v6'
+// Pixel-ish weights for a wide scrollable table (sum ≈ 1280)
 const DEFAULT_COLS = {
-  avatar: 5,
-  name: 16,
-  email: 18,
-  phone: 11,
-  role: 9,
-  company: 16,
-  status: 10,
-  actions: 15,
+  avatar: 56,
+  name: 180,
+  email: 220,
+  phone: 130,
+  role: 110,
+  company: 200,
+  status: 110,
+  actions: 274,
 }
 const MIN_COLS = {
-  avatar: 4,
-  name: 10,
-  email: 12,
-  phone: 8,
-  role: 7,
-  company: 10,
-  status: 8,
-  actions: 14,
+  avatar: 48,
+  name: 120,
+  email: 150,
+  phone: 100,
+  role: 90,
+  company: 140,
+  status: 90,
+  actions: 240,
 }
 
 function loadCols() {
@@ -51,11 +51,8 @@ function loadCols() {
   }
 }
 
-function toPercents(cols) {
-  const total = Object.values(cols).reduce((sum, value) => sum + value, 0) || 1
-  return Object.fromEntries(
-    Object.entries(cols).map(([key, value]) => [key, (value / total) * 100]),
-  )
+function tableWidth(cols) {
+  return Object.values(cols).reduce((sum, value) => sum + value, 0)
 }
 
 function generateClientPassword(length = 14) {
@@ -147,10 +144,10 @@ function InlineCell({ value, display, type = 'text', options, onSave }) {
   )
 }
 
-function ResizableTh({ label, colKey, widthPct, onResizeStart }) {
+function ResizableTh({ label, colKey, widthPx, onResizeStart }) {
   return (
     <th
-      style={{ width: `${widthPct}%` }}
+      style={{ width: widthPx, minWidth: widthPx, maxWidth: widthPx }}
       className="relative border-b border-[#1e4a73] bg-transparent px-2 py-3 text-left text-[11px] font-bold uppercase tracking-wider text-[#9db8d4]"
     >
       <span className="block truncate pr-2">{label}</span>
@@ -174,7 +171,7 @@ export default function AdminUsersPage() {
   const [cols, setCols] = useState(loadCols)
   const tableWrapRef = useRef(null)
   const colOrder = ['avatar', 'name', 'email', 'phone', 'role', 'company', 'status', 'actions']
-  const pct = toPercents(cols)
+  const totalTableWidth = tableWidth(cols)
 
   useEffect(() => {
     localStorage.setItem(COLS_KEY, JSON.stringify(cols))
@@ -196,25 +193,13 @@ export default function AdminUsersPage() {
   function onResizeStart(e, key) {
     e.preventDefault()
     e.stopPropagation()
-    const wrap = tableWrapRef.current
-    if (!wrap) return
-    const totalWidth = wrap.clientWidth || 1
     const startX = e.clientX
     const startCols = { ...cols }
-    const idx = colOrder.indexOf(key)
-    const neighbor = colOrder[idx + 1] || colOrder[idx - 1]
-    if (!neighbor || neighbor === 'avatar') return
 
     const onMove = (ev) => {
-      const deltaPct = ((ev.clientX - startX) / totalWidth) * 100
+      const delta = ev.clientX - startX
       const next = { ...startCols }
-      const desired = startCols[key] + deltaPct
-      const clampedKey = Math.max(MIN_COLS[key], desired)
-      const used = clampedKey - startCols[key]
-      const nextNeighbor = Math.max(MIN_COLS[neighbor], startCols[neighbor] - used)
-      const actualUsed = startCols[neighbor] - nextNeighbor
-      next[key] = startCols[key] + actualUsed
-      next[neighbor] = nextNeighbor
+      next[key] = Math.max(MIN_COLS[key], startCols[key] + delta)
       setCols(next)
     }
     const onUp = () => {
@@ -347,15 +332,15 @@ export default function AdminUsersPage() {
   const field =
     'mt-1.5 w-full rounded-lg border border-[#2a5f8f] bg-[#071529] px-3 py-2.5 text-sm font-medium text-[#f3f8ff] outline-none focus:border-[#4ea8ff]'
 
-  const cell = 'overflow-hidden border-b border-[#1e4a73] bg-transparent px-1 py-1'
+  const cell = 'border-b border-[#1e4a73] bg-transparent px-1 py-1'
   const head = 'border-b border-[#1e4a73] bg-transparent'
   return (
-    <div className="space-y-5 text-[#f3f8ff]">
+    <div className="space-y-5 text-[#f3f8ff]" style={{ minWidth: 0, maxWidth: '100%' }}>
       <div className="flex flex-wrap items-end justify-between gap-4">
         <div>
           <h1 className="m-0 text-[28px] font-bold leading-tight text-white">Пользователи</h1>
           <p className="mt-1 text-sm text-[#9db8d4]">
-            Клик по ячейке — правка. Тяните край заголовка — ширина колонки.
+            Клик по ячейке — правка. Таблицу можно прокручивать вправо, если не хватает ширины.
           </p>
         </div>
         <button
@@ -475,35 +460,62 @@ export default function AdminUsersPage() {
         </form>
       )}
 
-      <div className="overflow-hidden rounded-2xl border border-[#2a5f8f] bg-[#0b1f3a]">
-        <div ref={tableWrapRef} className="w-full overflow-x-auto">
-          <table className="w-full border-separate border-spacing-0" style={{ tableLayout: 'fixed' }}>
-            <colgroup>
-              {colOrder.map((key) => (
-                <col key={key} style={{ width: `${pct[key]}%` }} />
-              ))}
-            </colgroup>
-            <thead>
-              <tr>
-                <th className={`${head} px-2 py-3`} style={{ width: `${pct.avatar}%` }} />
-                <ResizableTh label="ФИО" colKey="name" widthPct={pct.name} onResizeStart={onResizeStart} />
-                <ResizableTh label="Email" colKey="email" widthPct={pct.email} onResizeStart={onResizeStart} />
-                <ResizableTh label="Телефон" colKey="phone" widthPct={pct.phone} onResizeStart={onResizeStart} />
-                <ResizableTh label="Роль" colKey="role" widthPct={pct.role} onResizeStart={onResizeStart} />
-                <ResizableTh label="Организация" colKey="company" widthPct={pct.company} onResizeStart={onResizeStart} />
-                <ResizableTh label="Статус" colKey="status" widthPct={pct.status} onResizeStart={onResizeStart} />
-                <th
-                  className={`${head} px-3 py-3 text-left text-[11px] font-bold uppercase tracking-wider text-[#9db8d4]`}
-                  style={{ width: `${pct.actions}%` }}
-                >
-                  Действия
-                </th>
-              </tr>
-            </thead>
-            <tbody>
+      <div
+        ref={tableWrapRef}
+        style={{
+          width: '100%',
+          maxWidth: '100%',
+          overflowX: 'scroll',
+          overflowY: 'visible',
+          WebkitOverflowScrolling: 'touch',
+          borderRadius: 16,
+          border: '1px solid #2a5f8f',
+          background: '#0b1f3a',
+        }}
+      >
+        <table
+          style={{
+            tableLayout: 'fixed',
+            width: totalTableWidth,
+            minWidth: totalTableWidth,
+            borderCollapse: 'separate',
+            borderSpacing: 0,
+          }}
+        >
+          <colgroup>
+            {colOrder.map((key) => (
+              <col key={key} style={{ width: cols[key], minWidth: cols[key] }} />
+            ))}
+          </colgroup>
+          <thead>
+            <tr>
+              <th
+                className={`${head} px-2 py-3`}
+                style={{ width: cols.avatar, minWidth: cols.avatar }}
+              />
+              <ResizableTh label="ФИО" colKey="name" widthPx={cols.name} onResizeStart={onResizeStart} />
+              <ResizableTh label="Email" colKey="email" widthPx={cols.email} onResizeStart={onResizeStart} />
+              <ResizableTh label="Телефон" colKey="phone" widthPx={cols.phone} onResizeStart={onResizeStart} />
+              <ResizableTh label="Роль" colKey="role" widthPx={cols.role} onResizeStart={onResizeStart} />
+              <ResizableTh
+                label="Организация"
+                colKey="company"
+                widthPx={cols.company}
+                onResizeStart={onResizeStart}
+              />
+              <ResizableTh label="Статус" colKey="status" widthPx={cols.status} onResizeStart={onResizeStart} />
+              <th
+                className={`${head} px-3 py-3 text-left text-[11px] font-bold uppercase tracking-wider text-[#9db8d4]`}
+                style={{ width: cols.actions, minWidth: cols.actions }}
+              >
+                Действия
+              </th>
+            </tr>
+          </thead>
+          <tbody>
               {items.map((u) => (
                 <tr key={u.id} className="bg-transparent hover:bg-[#122a4d]/70">
-                  <td className={`${cell} px-2 py-2`}>
+                  <td className={`${cell} px-2 py-2`} style={{ width: cols.avatar, minWidth: cols.avatar }}>
                     <label className="grid h-9 w-9 cursor-pointer place-items-center overflow-hidden rounded-full border border-[#2a5f8f] bg-[#1a3a63] text-sm font-extrabold text-white">
                       {u.avatar_url ? (
                         <img src={mediaUrl(u.avatar_url)} alt="" className="h-full w-full object-cover" />
@@ -513,19 +525,19 @@ export default function AdminUsersPage() {
                       <input type="file" accept="image/*" hidden onChange={(e) => uploadAvatar(u, e.target.files?.[0])} />
                     </label>
                   </td>
-                  <td className={cell}>
+                  <td className={cell} style={{ width: cols.name, minWidth: cols.name }}>
                     <InlineCell value={u.full_name} onSave={(fullName) => patchUser(u.id, { fullName })} />
                   </td>
-                  <td className={cell}>
+                  <td className={cell} style={{ width: cols.email, minWidth: cols.email }}>
                     <InlineCell type="email" value={u.email} onSave={(email) => patchUser(u.id, { email })} />
                   </td>
-                  <td className={cell}>
+                  <td className={cell} style={{ width: cols.phone, minWidth: cols.phone }}>
                     <InlineCell value={u.phone || ''} display={u.phone || '—'} onSave={(phone) => patchUser(u.id, { phone })} />
                   </td>
-                  <td className={cell}>
+                  <td className={cell} style={{ width: cols.role, minWidth: cols.role }}>
                     <InlineCell type="select" value={u.role} options={roleOptions} onSave={(role) => patchUser(u.id, { role })} />
                   </td>
-                  <td className={cell}>
+                  <td className={cell} style={{ width: cols.company, minWidth: cols.company }}>
                     <InlineCell
                       type="select"
                       value={u.company_id ? String(u.company_id) : ''}
@@ -534,10 +546,10 @@ export default function AdminUsersPage() {
                       onSave={(companyId) => patchUser(u.id, { companyId: companyId ? Number(companyId) : null })}
                     />
                   </td>
-                  <td className={cell}>
+                  <td className={cell} style={{ width: cols.status, minWidth: cols.status }}>
                     <InlineCell type="select" value={u.status} options={statusOptions} onSave={(status) => patchUser(u.id, { status })} />
                   </td>
-                  <td className={`${cell} px-3 py-2`}>
+                  <td className={`${cell} px-3 py-2`} style={{ width: cols.actions, minWidth: cols.actions }}>
                     <div className="flex items-center gap-2 whitespace-nowrap">
                       <button
                         type="button"
@@ -579,9 +591,8 @@ export default function AdminUsersPage() {
                   </td>
                 </tr>
               ))}
-            </tbody>
-          </table>
-        </div>
+          </tbody>
+        </table>
       </div>
     </div>
   )

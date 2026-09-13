@@ -11,7 +11,7 @@ export function appBaseUrl() {
     process.env.PUBLIC_APP_URL ||
       process.env.FRONTEND_URL ||
       process.env.APP_URL ||
-      'https://ewinners.by',
+      'https://ewinners.netlify.app',
   ).replace(/\/$/, '');
 }
 

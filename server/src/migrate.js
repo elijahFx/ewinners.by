@@ -97,6 +97,7 @@ const statements = [
 
   `CREATE TABLE IF NOT EXISTS bank_payments (
     id INT AUTO_INCREMENT PRIMARY KEY,
+    direction ENUM('income','expense') NOT NULL DEFAULT 'income',
     amount DECIMAL(14,2) NOT NULL,
     payer_name VARCHAR(255) NULL,
     payer_unp VARCHAR(32) NULL,
@@ -105,6 +106,7 @@ const statements = [
     invoice_id INT NULL,
     company_id INT NULL,
     status ENUM('unmatched','matched','credited','rejected') NOT NULL DEFAULT 'unmatched',
+    operation_date DATE NULL,
     imported_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     confirmed_by INT NULL,
     confirmed_at DATETIME NULL,
@@ -210,6 +212,16 @@ const statements = [
     KEY idx_auth_tokens_user_type (user_id, type),
     CONSTRAINT fk_auth_tokens_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+
+  `CREATE TABLE IF NOT EXISTS user_companies (
+    user_id INT NOT NULL,
+    company_id INT NOT NULL,
+    is_default TINYINT(1) NOT NULL DEFAULT 0,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (user_id, company_id),
+    CONSTRAINT fk_uc_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    CONSTRAINT fk_uc_company FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE CASCADE
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
 ];
 
 async function ensureColumn(table, column, definition) {
@@ -236,6 +248,32 @@ export async function migrate() {
   await ensureColumn('users', 'telegram_chat_id', 'VARCHAR(64) NULL AFTER notify_telegram');
   await ensureColumn('companies', 'api_key', 'VARCHAR(96) NULL UNIQUE AFTER manager_email');
   await ensureColumn('companies', 'api_key_created_at', 'DATETIME NULL AFTER api_key');
+  await ensureColumn(
+    'companies',
+    'entity_type',
+    "ENUM('ooo','ip','other') NOT NULL DEFAULT 'ooo' AFTER name",
+  );
+  await ensureColumn(
+    'bank_payments',
+    'direction',
+    "ENUM('income','expense') NOT NULL DEFAULT 'income' AFTER id",
+  );
+  await ensureColumn(
+    'bank_payments',
+    'operation_date',
+    'DATE NULL AFTER status',
+  );
+  await pool.execute(
+    `UPDATE bank_payments
+     SET operation_date = DATE(imported_at)
+     WHERE operation_date IS NULL`,
+  );
+
+  // Backfill membership from users.company_id
+  await pool.execute(
+    `INSERT IGNORE INTO user_companies (user_id, company_id, is_default)
+     SELECT id, company_id, 1 FROM users WHERE company_id IS NOT NULL`,
+  );
 }
 
 if (import.meta.url === `file://${process.argv[1]}` || process.argv[1]?.endsWith('migrate.js')) {

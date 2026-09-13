@@ -6,6 +6,7 @@ const AuthContext = createContext(null)
 export function AuthProvider({ children }) {
   const [user, setUser] = useState(null)
   const [company, setCompany] = useState(null)
+  const [companies, setCompanies] = useState([])
   const [loading, setLoading] = useState(true)
 
   async function refresh() {
@@ -13,10 +14,12 @@ export function AuthProvider({ children }) {
       const data = await api('/api/auth/me')
       setUser(data.user)
       setCompany(data.company)
+      setCompanies(data.companies || [])
       return data
     } catch {
       setUser(null)
       setCompany(null)
+      setCompanies([])
       setToken(null)
       return null
     }
@@ -68,12 +71,20 @@ export function AuthProvider({ children }) {
     setToken(null)
     setUser(null)
     setCompany(null)
+    setCompanies([])
+  }
+
+  async function switchCompany(companyId) {
+    const data = await api(`/api/cabinet/companies/${companyId}/activate`, { method: 'POST' })
+    await refresh()
+    return data
   }
 
   const value = useMemo(
     () => ({
       user,
       company,
+      companies,
       loading,
       login,
       verify2fa,
@@ -81,8 +92,9 @@ export function AuthProvider({ children }) {
       logout,
       refresh,
       setCompany,
+      switchCompany,
     }),
-    [user, company, loading],
+    [user, company, companies, loading],
   )
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>

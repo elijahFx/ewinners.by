@@ -22,6 +22,8 @@ const FONT_CANDIDATES = [
   '/System/Library/Fonts/Supplemental/Arial Unicode.ttf',
   '/Library/Fonts/Arial Unicode.ttf',
   '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
+  '/usr/share/fonts/truetype/freefont/FreeSans.ttf',
+  '/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf',
 ];
 
 const FONT_BOLD_CANDIDATES = [
@@ -29,6 +31,8 @@ const FONT_BOLD_CANDIDATES = [
   path.join(fontsDir, 'ArialUnicode.ttf'),
   '/System/Library/Fonts/Supplemental/Arial Unicode.ttf',
   '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf',
+  '/usr/share/fonts/truetype/freefont/FreeSansBold.ttf',
+  '/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf',
 ];
 
 function resolvePath(candidates, minSize = 1000) {

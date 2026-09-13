@@ -24,7 +24,8 @@ import AdminOverviewPage from './cabinet/pages/admin/AdminOverviewPage'
 import AdminCompaniesPage from './cabinet/pages/admin/AdminCompaniesPage'
 import AdminUsersPage from './cabinet/pages/admin/AdminUsersPage'
 import AdminProjectsPage from './cabinet/pages/admin/AdminProjectsPage'
-import AdminPaymentsPage from './cabinet/pages/admin/AdminPaymentsPage'
+import AdminBankingPage from './cabinet/pages/admin/AdminBankingPage'
+import AdminInvoicesPage from './cabinet/pages/admin/AdminInvoicesPage'
 import AdminBalancePage from './cabinet/pages/admin/AdminBalancePage'
 import AdminApiKeysPage from './cabinet/pages/admin/AdminApiKeysPage'
 
@@ -158,13 +159,22 @@ export default function App() {
             }
           />
           <Route
-            path="admin/payments"
+            path="admin/banking"
             element={
               <ProtectedRoute roles={['admin', 'accountant']}>
-                <AdminPaymentsPage />
+                <AdminBankingPage />
               </ProtectedRoute>
             }
           />
+          <Route
+            path="admin/invoices"
+            element={
+              <ProtectedRoute roles={['admin', 'accountant']}>
+                <AdminInvoicesPage />
+              </ProtectedRoute>
+            }
+          />
+          <Route path="admin/payments" element={<Navigate to="/cabinet/admin/banking" replace />} />
           <Route
             path="admin/balance"
             element={

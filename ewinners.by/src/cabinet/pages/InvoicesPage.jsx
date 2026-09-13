@@ -18,7 +18,7 @@ const statusMap = {
 }
 
 export default function InvoicesPage() {
-  const { user } = useAuth()
+  const { user, company } = useAuth()
   const [items, setItems] = useState([])
   const [amount, setAmount] = useState('1000')
   const [busy, setBusy] = useState(false)
@@ -31,13 +31,16 @@ export default function InvoicesPage() {
 
   useEffect(() => {
     load().catch((e) => alert(e.message))
-  }, [])
+  }, [company?.id])
 
   async function createInvoice(e) {
     e.preventDefault()
     setBusy(true)
     try {
-      await api('/api/cabinet/invoices', { method: 'POST', body: { amount: Number(amount) } })
+      await api('/api/cabinet/invoices', {
+        method: 'POST',
+        body: { amount: Number(amount), companyId: company?.id || user?.companyId },
+      })
       setAmount('1000')
       await load()
     } catch (err) {
@@ -52,7 +55,10 @@ export default function InvoicesPage() {
       <div className="cab-page-head">
         <div>
           <h1>Счета на оплату</h1>
-          <p>После оплаты доступен акт с тем же номером. Документы можно смотреть и отправлять на email.</p>
+          <p>
+            Плательщик: <strong style={{ color: '#8fd2ff' }}>{company?.name || 'не выбран'}</strong>
+            . После оплаты доступен акт с тем же номером.
+          </p>
         </div>
       </div>
 

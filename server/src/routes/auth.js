@@ -19,6 +19,7 @@ import {
   resetPasswordWithToken,
   sendPasswordResetEmail,
 } from '../services/authMail.js';
+import { listUserCompanies, mapCompany } from '../services/userCompanies.js';
 
 const upload = createAvatarUpload((req) => req.user.id);
 const router = Router();
@@ -229,15 +230,28 @@ router.post('/accept-invite', async (req, res) => {
 
 router.get('/me', authRequired, async (req, res) => {
   let company = null;
+  let companies = [];
   if (req.user.company_id) {
     const rows = await query('SELECT * FROM companies WHERE id = :id LIMIT 1', {
       id: req.user.company_id,
     });
     company = rows[0] || null;
   }
+  if (req.user.role === 'client') {
+    try {
+      const rows = await listUserCompanies(req.user.id);
+      companies = rows.map(mapCompany);
+      if (!company && rows[0]) {
+        company = rows[0];
+      }
+    } catch (err) {
+      console.warn('companies list failed', err.message);
+    }
+  }
   res.json({
     user: publicUser(req.user),
     company,
+    companies,
     telegramBotConfigured: telegramBotConfigured(),
   });
 });

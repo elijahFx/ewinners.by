@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import bcrypt from 'bcrypt';
+import dayjs from 'dayjs';
 import fs from 'fs';
 import { query, withTransaction } from '../db.js';
 import { authRequired, requireRoles } from '../middleware/auth.js';
@@ -16,6 +17,76 @@ import {
   isMailConfigured,
   sendInviteEmail,
 } from '../services/authMail.js';
+import { linkUserCompany } from '../services/userCompanies.js';
+import {
+  fetchPriorbankStatement,
+  getPriorbankStatus,
+  summarizeMovements,
+} from '../services/priorbank.js';
+import { generateInvoicePdf } from '../services/invoicePdf.js';
+
+async function loadInvoicePdf(invoice) {
+  const companies = await query('SELECT * FROM companies WHERE id = :id LIMIT 1', {
+    id: invoice.company_id,
+  });
+  const company = companies[0];
+  if (!company) {
+    const err = new Error('Компания не найдена');
+    err.status = 404;
+    throw err;
+  }
+  const { filePath, fileName } = await generateInvoicePdf({
+    number: invoice.number,
+    amount: invoice.amount,
+    purpose: invoice.purpose,
+    company,
+    createdAt: dayjs(invoice.created_at).format('DD.MM.YYYY'),
+  });
+  await query('UPDATE invoices SET file_path = :file_path WHERE id = :id', {
+    file_path: filePath,
+    id: invoice.id,
+  });
+  return { filePath, fileName, company };
+}
+
+function bankPaymentDateExpr() {
+  return 'COALESCE(bp.operation_date, DATE(bp.imported_at))';
+}
+
+function buildBankPaymentsFilter(req) {
+  const params = {};
+  let where = ' WHERE 1=1';
+  const direction = req.query.direction;
+  if (direction === 'income' || direction === 'expense') {
+    where += ' AND bp.direction = :direction';
+    params.direction = direction;
+  }
+  if (req.query.status) {
+    where += ' AND bp.status = :status';
+    params.status = String(req.query.status);
+  }
+  if (req.query.companyId) {
+    where += ' AND bp.company_id = :company_id';
+    params.company_id = Number(req.query.companyId);
+  }
+  if (req.query.from) {
+    where += ` AND ${bankPaymentDateExpr()} >= :from_date`;
+    params.from_date = String(req.query.from).slice(0, 10);
+  }
+  if (req.query.to) {
+    where += ` AND ${bankPaymentDateExpr()} <= :to_date`;
+    params.to_date = String(req.query.to).slice(0, 10);
+  }
+  const q = String(req.query.q || '').trim();
+  if (q) {
+    where += ` AND (
+      bp.payer_name LIKE :q OR bp.payer_unp LIKE :q OR bp.purpose LIKE :q
+      OR bp.reference LIKE :q OR c.name LIKE :q OR i.number LIKE :q
+    )`;
+    params.q = `%${q}%`;
+  }
+  return { where, params };
+}
 
 const router = Router();
 router.use(authRequired, requireRoles('admin', 'accountant'));
@@ -186,6 +257,9 @@ router.post('/users', requireRoles('admin'), async (req, res) => {
         role,
         passwordMode: 'invite',
       });
+      if (req.body.companyId) {
+        await linkUserCompany(result.insertId, Number(req.body.companyId), { makeDefault: true });
+      }
 
       let inviteSent = false;
       let inviteError = null;
@@ -236,6 +310,9 @@ router.post('/users', requireRoles('admin'), async (req, res) => {
       },
     );
     await audit(req.user.id, 'create_user', 'user', result.insertId, { email, role, passwordMode });
+    if (req.body.companyId) {
+      await linkUserCompany(result.insertId, Number(req.body.companyId), { makeDefault: true });
+    }
     res.status(201).json({
       id: result.insertId,
       email,
@@ -349,6 +426,10 @@ router.patch('/users/:id', requireRoles('admin'), async (req, res) => {
         bump: bumpToken ? 1 : 0,
       },
     );
+
+    if (companyId) {
+      await linkUserCompany(id, companyId, { makeDefault: true });
+    }
 
     await audit(req.user.id, 'update_user', 'user', id, {
       email,
@@ -564,40 +645,399 @@ router.post('/balance/adjust', requireRoles('admin', 'accountant'), async (req, 
   }
 });
 
-router.get('/payments', async (_req, res) => {
-  const rows = await query(
-    `SELECT bp.*, c.name AS company_name, i.number AS invoice_number
-     FROM bank_payments bp
-     LEFT JOIN companies c ON c.id = bp.company_id
-     LEFT JOIN invoices i ON i.id = bp.invoice_id
-     ORDER BY bp.imported_at DESC`,
-  );
-  res.json({ items: rows });
+router.get('/banking/status', async (_req, res) => {
+  try {
+    res.json(await getPriorbankStatus());
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Не удалось проверить Priorbank' });
+  }
+});
+
+router.get('/banking/movements', async (req, res) => {
+  try {
+    const from = String(req.query.from || '').slice(0, 10);
+    const to = String(req.query.to || '').slice(0, 10);
+    const data = await fetchPriorbankStatement({ from, to });
+    let items = data.movements || [];
+    const direction = req.query.direction;
+    if (direction === 'income' || direction === 'expense') {
+      items = items.filter((m) => m.direction === direction);
+    }
+    const q = String(req.query.q || '').trim().toLowerCase();
+    if (q) {
+      items = items.filter((m) =>
+        [m.counterparty, m.unp, m.purpose, m.reference]
+          .filter(Boolean)
+          .some((v) => String(v).toLowerCase().includes(q)),
+      );
+    }
+    items.sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')));
+    res.json({
+      configured: data.configured,
+      provider: data.provider,
+      account: data.account,
+      period: data.period || { from, to },
+      fetchedAt: data.fetchedAt,
+      message: data.message,
+      items,
+      summary: summarizeMovements(data.movements || []),
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(400).json({ error: err.message || 'Не удалось загрузить движения Priorbank' });
+  }
+});
+
+router.get('/banking/summary', async (req, res) => {
+  try {
+    const from = String(req.query.from || '').slice(0, 10);
+    const to = String(req.query.to || '').slice(0, 10);
+    const data = await fetchPriorbankStatement({ from, to });
+    res.json({
+      configured: data.configured,
+      provider: data.provider,
+      account: data.account,
+      period: data.period || { from, to },
+      fetchedAt: data.fetchedAt,
+      message: data.message,
+      ...summarizeMovements(data.movements || []),
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(400).json({ error: err.message || 'Не удалось посчитать итоги Priorbank' });
+  }
+});
+
+router.get('/banking/statement.csv', async (req, res) => {
+  try {
+    const from = String(req.query.from || '').slice(0, 10);
+    const to = String(req.query.to || '').slice(0, 10);
+    const data = await fetchPriorbankStatement({ from, to });
+    const items = [...(data.movements || [])].sort((a, b) =>
+      String(a.date || '').localeCompare(String(b.date || '')),
+    );
+    const header = [
+      'Дата',
+      'Тип',
+      'Сумма',
+      'Валюта',
+      'Контрагент',
+      'УНП',
+      'Назначение',
+      'Референс',
+      'Остаток',
+    ];
+    const lines = [header.join(';')];
+    const totals = summarizeMovements(items);
+    for (const r of items) {
+      lines.push(
+        [
+          r.date ? dayjs(r.date).format('DD.MM.YYYY') : '',
+          r.direction === 'expense' ? 'Расход' : 'Доход',
+          Number(r.amount).toFixed(2),
+          r.currency || 'BYN',
+          (r.counterparty || '').replace(/;/g, ','),
+          r.unp || '',
+          (r.purpose || '').replace(/;/g, ','),
+          (r.reference || '').replace(/;/g, ','),
+          r.balanceAfter == null ? '' : Number(r.balanceAfter).toFixed(2),
+        ].join(';'),
+      );
+    }
+    lines.push('');
+    lines.push(['Итого доходы', '', totals.income.toFixed(2)].join(';'));
+    lines.push(['Итого расходы', '', totals.expense.toFixed(2)].join(';'));
+    lines.push(['Сальдо', '', totals.net.toFixed(2)].join(';'));
+
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename="priorbank_${from || 'all'}_${to || 'all'}.csv"`,
+    );
+    res.send(`\uFEFF${lines.join('\n')}`);
+  } catch (err) {
+    console.error(err);
+    res.status(400).json({ error: err.message || 'Ошибка экспорта выписки Priorbank' });
+  }
+});
+
+router.get('/payments', async (req, res) => {
+  try {
+    const { where, params } = buildBankPaymentsFilter(req);
+    const rows = await query(
+      `SELECT bp.*, c.name AS company_name, c.unp AS company_unp, i.number AS invoice_number,
+              ${bankPaymentDateExpr()} AS op_date
+       FROM bank_payments bp
+       LEFT JOIN companies c ON c.id = bp.company_id
+       LEFT JOIN invoices i ON i.id = bp.invoice_id
+       ${where}
+       ORDER BY ${bankPaymentDateExpr()} DESC, bp.id DESC
+       LIMIT 1000`,
+      params,
+    );
+    res.json({ items: rows });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Не удалось загрузить платежи' });
+  }
+});
+
+router.get('/payments/summary', async (req, res) => {
+  try {
+    const { where, params } = buildBankPaymentsFilter(req);
+    const rows = await query(
+      `SELECT
+         bp.direction,
+         COUNT(*) AS cnt,
+         COALESCE(SUM(bp.amount), 0) AS total
+       FROM bank_payments bp
+       LEFT JOIN companies c ON c.id = bp.company_id
+       LEFT JOIN invoices i ON i.id = bp.invoice_id
+       ${where}
+         AND bp.status <> 'rejected'
+       GROUP BY bp.direction`,
+      params,
+    );
+    let income = 0;
+    let expense = 0;
+    let incomeCount = 0;
+    let expenseCount = 0;
+    for (const r of rows) {
+      if (r.direction === 'expense') {
+        expense = Number(r.total);
+        expenseCount = Number(r.cnt);
+      } else {
+        income = Number(r.total);
+        incomeCount = Number(r.cnt);
+      }
+    }
+    res.json({
+      income,
+      expense,
+      net: income - expense,
+      incomeCount,
+      expenseCount,
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Не удалось посчитать итоги' });
+  }
+});
+
+router.get('/export/bank-statement.csv', async (req, res) => {
+  try {
+    const { where, params } = buildBankPaymentsFilter(req);
+    const rows = await query(
+      `SELECT bp.*, c.name AS company_name, i.number AS invoice_number,
+              ${bankPaymentDateExpr()} AS op_date
+       FROM bank_payments bp
+       LEFT JOIN companies c ON c.id = bp.company_id
+       LEFT JOIN invoices i ON i.id = bp.invoice_id
+       ${where}
+         AND bp.status <> 'rejected'
+       ORDER BY ${bankPaymentDateExpr()} ASC, bp.id ASC`,
+      params,
+    );
+
+    const header = [
+      'Дата',
+      'Тип',
+      'Сумма',
+      'Контрагент',
+      'УНП',
+      'Организация',
+      'Счёт',
+      'Назначение',
+      'Референс',
+      'Статус',
+    ];
+    const lines = [header.join(';')];
+    let income = 0;
+    let expense = 0;
+    for (const r of rows) {
+      const dir = r.direction === 'expense' ? 'expense' : 'income';
+      if (dir === 'expense') expense += Number(r.amount);
+      else income += Number(r.amount);
+      lines.push(
+        [
+          dayjs(r.op_date || r.imported_at).format('DD.MM.YYYY'),
+          dir === 'expense' ? 'Расход' : 'Доход',
+          Number(r.amount).toFixed(2),
+          (r.payer_name || '').replace(/;/g, ','),
+          r.payer_unp || '',
+          (r.company_name || '').replace(/;/g, ','),
+          r.invoice_number || '',
+          (r.purpose || '').replace(/;/g, ','),
+          (r.reference || '').replace(/;/g, ','),
+          r.status,
+        ].join(';'),
+      );
+    }
+    lines.push('');
+    lines.push(['Итого доходы', '', income.toFixed(2)].join(';'));
+    lines.push(['Итого расходы', '', expense.toFixed(2)].join(';'));
+    lines.push(['Сальдо', '', (income - expense).toFixed(2)].join(';'));
+
+    const from = req.query.from ? String(req.query.from).slice(0, 10) : 'all';
+    const to = req.query.to ? String(req.query.to).slice(0, 10) : 'all';
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename="bank-statement_${from}_${to}.csv"`,
+    );
+    res.send(`\uFEFF${lines.join('\n')}`);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Ошибка экспорта выписки' });
+  }
 });
 
 router.post('/payments', requireRoles('admin', 'accountant'), async (req, res) => {
   try {
     const amount = Number(req.body.amount);
     if (!(amount > 0)) return res.status(400).json({ error: 'Укажите сумму' });
+    const direction = req.body.direction === 'expense' ? 'expense' : 'income';
+    const companyId = req.body.companyId ? Number(req.body.companyId) : null;
+    const invoiceId = req.body.invoiceId ? Number(req.body.invoiceId) : null;
+    const operationDate = req.body.operationDate
+      ? String(req.body.operationDate).slice(0, 10)
+      : dayjs().format('YYYY-MM-DD');
+
+    let status = 'unmatched';
+    if (direction === 'expense') {
+      status = 'matched';
+    } else if (companyId || invoiceId) {
+      status = 'matched';
+    }
+
     const result = await query(
       `INSERT INTO bank_payments
-        (amount, payer_name, payer_unp, reference, purpose, invoice_id, company_id, status)
+        (direction, amount, payer_name, payer_unp, reference, purpose, invoice_id, company_id, status, operation_date)
        VALUES
-        (:amount, :payer_name, :payer_unp, :reference, :purpose, :invoice_id, :company_id, 'unmatched')`,
+        (:direction, :amount, :payer_name, :payer_unp, :reference, :purpose, :invoice_id, :company_id, :status, :operation_date)`,
       {
+        direction,
         amount,
         payer_name: req.body.payerName || null,
         payer_unp: req.body.payerUnp || null,
         reference: req.body.reference || null,
         purpose: req.body.purpose || null,
-        invoice_id: req.body.invoiceId || null,
-        company_id: req.body.companyId || null,
+        invoice_id: invoiceId,
+        company_id: companyId,
+        status,
+        operation_date: operationDate,
       },
     );
+    await audit(req.user.id, 'create_bank_payment', 'bank_payment', result.insertId, {
+      direction,
+      amount,
+      companyId,
+    });
     res.status(201).json({ id: result.insertId });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Не удалось добавить платёж' });
+  }
+});
+
+router.patch('/payments/:id', requireRoles('admin', 'accountant'), async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const rows = await query('SELECT * FROM bank_payments WHERE id = :id LIMIT 1', { id });
+    const payment = rows[0];
+    if (!payment) return res.status(404).json({ error: 'Платёж не найден' });
+    if (payment.status === 'credited') {
+      return res.status(400).json({ error: 'Зачисленный платёж нельзя изменить' });
+    }
+    if (payment.status === 'rejected') {
+      return res.status(400).json({ error: 'Отклонённый платёж нельзя изменить' });
+    }
+
+    const companyId = req.body.companyId !== undefined
+      ? (req.body.companyId ? Number(req.body.companyId) : null)
+      : payment.company_id;
+    const invoiceId = req.body.invoiceId !== undefined
+      ? (req.body.invoiceId ? Number(req.body.invoiceId) : null)
+      : payment.invoice_id;
+    const purpose = req.body.purpose !== undefined
+      ? (req.body.purpose || null)
+      : payment.purpose;
+    const reference = req.body.reference !== undefined
+      ? (req.body.reference || null)
+      : payment.reference;
+    const payerName = req.body.payerName !== undefined
+      ? (req.body.payerName || null)
+      : payment.payer_name;
+    const payerUnp = req.body.payerUnp !== undefined
+      ? (req.body.payerUnp || null)
+      : payment.payer_unp;
+    const operationDate = req.body.operationDate
+      ? String(req.body.operationDate).slice(0, 10)
+      : payment.operation_date;
+
+    let status = payment.status;
+    if (payment.direction !== 'expense') {
+      if (companyId || invoiceId) status = 'matched';
+      else status = 'unmatched';
+    }
+
+    await query(
+      `UPDATE bank_payments
+       SET company_id = :company_id,
+           invoice_id = :invoice_id,
+           purpose = :purpose,
+           reference = :reference,
+           payer_name = :payer_name,
+           payer_unp = :payer_unp,
+           operation_date = :operation_date,
+           status = :status
+       WHERE id = :id`,
+      {
+        id,
+        company_id: companyId,
+        invoice_id: invoiceId,
+        purpose,
+        reference,
+        payer_name: payerName,
+        payer_unp: payerUnp,
+        operation_date: operationDate,
+        status,
+      },
+    );
+
+    await audit(req.user.id, 'bind_bank_payment', 'bank_payment', id, {
+      companyId,
+      invoiceId,
+      status,
+    });
+    res.json({ ok: true, status, companyId, invoiceId });
+  } catch (err) {
+    console.error(err);
+    res.status(400).json({ error: err.message || 'Не удалось обновить платёж' });
+  }
+});
+
+router.post('/payments/:id/reject', requireRoles('admin', 'accountant'), async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const rows = await query('SELECT * FROM bank_payments WHERE id = :id LIMIT 1', { id });
+    const payment = rows[0];
+    if (!payment) return res.status(404).json({ error: 'Платёж не найден' });
+    if (payment.status === 'credited') {
+      return res.status(400).json({ error: 'Зачисленный платёж нельзя отклонить' });
+    }
+    await query(
+      `UPDATE bank_payments
+       SET status = 'rejected', confirmed_by = :uid, confirmed_at = NOW()
+       WHERE id = :id`,
+      { id, uid: req.user.id },
+    );
+    await audit(req.user.id, 'reject_bank_payment', 'bank_payment', id, {});
+    res.json({ ok: true });
+  } catch (err) {
+    console.error(err);
+    res.status(400).json({ error: err.message || 'Не удалось отклонить' });
   }
 });
 
@@ -607,7 +1047,11 @@ router.post('/payments/:id/credit', requireRoles('admin', 'accountant'), async (
     const payments = await query('SELECT * FROM bank_payments WHERE id = :id', { id });
     const payment = payments[0];
     if (!payment) return res.status(404).json({ error: 'Платёж не найден' });
+    if (payment.direction === 'expense') {
+      return res.status(400).json({ error: 'Расход нельзя зачислить на баланс клиента' });
+    }
     if (payment.status === 'credited') return res.status(400).json({ error: 'Уже зачислен' });
+    if (payment.status === 'rejected') return res.status(400).json({ error: 'Платёж отклонён' });
 
     let companyId = payment.company_id || Number(req.body.companyId);
     let invoiceId = payment.invoice_id || Number(req.body.invoiceId) || null;
@@ -684,13 +1128,164 @@ router.post('/payments/:id/credit', requireRoles('admin', 'accountant'), async (
   }
 });
 
-router.get('/invoices', async (_req, res) => {
-  const rows = await query(
-    `SELECT i.*, c.name AS company_name, c.unp AS company_unp
-     FROM invoices i JOIN companies c ON c.id = i.company_id
-     ORDER BY i.created_at DESC`,
-  );
-  res.json({ items: rows });
+router.get('/invoices', async (req, res) => {
+  try {
+    const params = {};
+    let sql = `SELECT i.*, c.name AS company_name, c.unp AS company_unp, c.balance AS company_balance
+               FROM invoices i
+               JOIN companies c ON c.id = i.company_id
+               WHERE 1=1`;
+    if (req.query.companyId) {
+      sql += ' AND i.company_id = :company_id';
+      params.company_id = Number(req.query.companyId);
+    }
+    if (req.query.status) {
+      sql += ' AND i.status = :status';
+      params.status = String(req.query.status);
+    }
+    const q = String(req.query.q || '').trim();
+    if (q) {
+      sql += ` AND (
+        i.number LIKE :q OR c.name LIKE :q OR c.unp LIKE :q OR i.purpose LIKE :q
+      )`;
+      params.q = `%${q}%`;
+    }
+    if (req.query.from) {
+      sql += ' AND DATE(i.created_at) >= :from_date';
+      params.from_date = String(req.query.from).slice(0, 10);
+    }
+    if (req.query.to) {
+      sql += ' AND DATE(i.created_at) <= :to_date';
+      params.to_date = String(req.query.to).slice(0, 10);
+    }
+    sql += ' ORDER BY i.created_at DESC LIMIT 1000';
+    const rows = await query(sql, params);
+    res.json({ items: rows });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Не удалось загрузить счета' });
+  }
+});
+
+router.get('/invoices/:id/view', async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const rows = await query('SELECT * FROM invoices WHERE id = :id LIMIT 1', { id });
+    const invoice = rows[0];
+    if (!invoice) return res.status(404).json({ error: 'Счёт не найден' });
+    const { filePath, fileName } = await loadInvoicePdf(invoice);
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `inline; filename="${fileName}"`);
+    fs.createReadStream(filePath).pipe(res);
+  } catch (err) {
+    console.error(err);
+    res.status(err.status || 500).json({ error: err.message || 'Ошибка просмотра' });
+  }
+});
+
+router.get('/invoices/:id/download', async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const rows = await query('SELECT * FROM invoices WHERE id = :id LIMIT 1', { id });
+    const invoice = rows[0];
+    if (!invoice) return res.status(404).json({ error: 'Счёт не найден' });
+    const { filePath, fileName } = await loadInvoicePdf(invoice);
+    res.download(filePath, fileName);
+  } catch (err) {
+    console.error(err);
+    res.status(err.status || 500).json({ error: err.message || 'Ошибка скачивания' });
+  }
+});
+
+router.post('/invoices/:id/mark-paid', requireRoles('admin', 'accountant'), async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const rows = await query('SELECT * FROM invoices WHERE id = :id LIMIT 1', { id });
+    const invoice = rows[0];
+    if (!invoice) return res.status(404).json({ error: 'Счёт не найден' });
+    if (invoice.status === 'paid') {
+      return res.status(400).json({ error: 'Счёт уже отмечен оплаченным' });
+    }
+    if (invoice.status === 'cancelled') {
+      return res.status(400).json({ error: 'Отменённый счёт нельзя отметить оплаченным' });
+    }
+
+    const companyId = Number(invoice.company_id);
+    const amount = Number(invoice.amount);
+    if (!(amount > 0)) return res.status(400).json({ error: 'Некорректная сумма счёта' });
+
+    const result = await withTransaction(async (conn) => {
+      const applied = await applyBalanceChange({
+        conn,
+        companyId,
+        invoiceId: id,
+        type: 'credit',
+        category: 'bank_payment',
+        amount,
+        comment: `Ручное подтверждение оплаты счёта ${invoice.number}`,
+        createdBy: req.user.id,
+      });
+
+      await conn.execute(
+        `UPDATE invoices
+         SET status = 'paid', paid_amount = amount, paid_at = NOW()
+         WHERE id = ?`,
+        [id],
+      );
+
+      await conn.execute(
+        `UPDATE documents
+         SET status = 'paid'
+         WHERE company_id = ? AND type = 'invoice' AND number = ?`,
+        [companyId, invoice.number],
+      );
+
+      return applied;
+    });
+
+    await notifyCompanyUsers(
+      companyId,
+      'Счёт оплачен',
+      `Счёт ${invoice.number} отмечен оплаченным. На баланс зачислено ${amount.toFixed(2)} BYN.`,
+    );
+
+    try {
+      const companyRows = await query('SELECT * FROM companies WHERE id = :id LIMIT 1', {
+        id: companyId,
+      });
+      const invRows = await query('SELECT * FROM invoices WHERE id = :id LIMIT 1', { id });
+      if (invRows[0] && companyRows[0]) {
+        const { ensureActForInvoice } = await import('../services/documents.js');
+        await ensureActForInvoice(invRows[0], companyRows[0]);
+        await notifyCompanyUsers(
+          companyId,
+          'Акт оказанных услуг',
+          `Сформирован акт ${invoice.number}. Документ доступен в разделе «Документы».`,
+        );
+      }
+    } catch (err) {
+      console.warn('Act generation failed:', err.message);
+    }
+
+    await audit(req.user.id, 'mark_invoice_paid', 'invoice', id, {
+      companyId,
+      amount,
+      number: invoice.number,
+    });
+
+    const updated = await query(
+      `SELECT i.*, c.name AS company_name, c.unp AS company_unp, c.balance AS company_balance
+       FROM invoices i
+       JOIN companies c ON c.id = i.company_id
+       WHERE i.id = :id`,
+      { id },
+    );
+
+    res.json({ ok: true, invoice: updated[0], balance: result });
+  } catch (err) {
+    console.error(err);
+    res.status(400).json({ error: err.message || 'Не удалось отметить счёт оплаченным' });
+  }
 });
 
 router.get('/transactions', async (req, res) => {
@@ -702,6 +1297,18 @@ router.get('/transactions', async (req, res) => {
   if (req.query.companyId) {
     sql += ' AND t.company_id = :company_id';
     params.company_id = Number(req.query.companyId);
+  }
+  if (req.query.type === 'credit' || req.query.type === 'debit') {
+    sql += ' AND t.type = :type';
+    params.type = req.query.type;
+  }
+  if (req.query.from) {
+    sql += ' AND DATE(t.created_at) >= :from_date';
+    params.from_date = String(req.query.from).slice(0, 10);
+  }
+  if (req.query.to) {
+    sql += ' AND DATE(t.created_at) <= :to_date';
+    params.to_date = String(req.query.to).slice(0, 10);
   }
   sql += ' ORDER BY t.created_at DESC LIMIT 500';
   const rows = await query(sql, params);
