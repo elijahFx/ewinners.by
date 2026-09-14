@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Copy, KeyRound, Plus, Trash2, X } from 'lucide-react'
+import { Building2, Copy, KeyRound, Plus, Trash2, X } from 'lucide-react'
 import { api, mediaUrl } from '../../api'
 
 const emptyForm = {
@@ -24,7 +24,7 @@ const DEFAULT_COLS = {
   role: 110,
   company: 200,
   status: 110,
-  actions: 274,
+  actions: 320,
 }
 const MIN_COLS = {
   avatar: 48,
@@ -34,7 +34,7 @@ const MIN_COLS = {
   role: 90,
   company: 140,
   status: 90,
-  actions: 240,
+  actions: 280,
 }
 
 function loadCols() {
@@ -168,6 +168,10 @@ export default function AdminUsersPage() {
   const [created, setCreated] = useState(null)
   const [saving, setSaving] = useState(false)
   const [showCreate, setShowCreate] = useState(false)
+  const [orgsUser, setOrgsUser] = useState(null)
+  const [linkedCompanies, setLinkedCompanies] = useState([])
+  const [addCompanyId, setAddCompanyId] = useState('')
+  const [orgsBusy, setOrgsBusy] = useState(false)
   const [cols, setCols] = useState(loadCols)
   const tableWrapRef = useRef(null)
   const colOrder = ['avatar', 'name', 'email', 'phone', 'role', 'company', 'status', 'actions']
@@ -208,6 +212,56 @@ export default function AdminUsersPage() {
     }
     window.addEventListener('mousemove', onMove)
     window.addEventListener('mouseup', onUp)
+  }
+
+  async function openOrgs(user) {
+    setOrgsUser(user)
+    setAddCompanyId('')
+    setOrgsBusy(true)
+    try {
+      const data = await api(`/api/admin/users/${user.id}/companies`)
+      setLinkedCompanies(data.items || [])
+    } catch (err) {
+      alert(err.message)
+      setOrgsUser(null)
+    } finally {
+      setOrgsBusy(false)
+    }
+  }
+
+  async function linkCompany() {
+    if (!orgsUser || !addCompanyId) return
+    setOrgsBusy(true)
+    try {
+      const data = await api(`/api/admin/users/${orgsUser.id}/companies`, {
+        method: 'POST',
+        body: { companyId: Number(addCompanyId), makeDefault: linkedCompanies.length === 0 },
+      })
+      setLinkedCompanies(data.items || [])
+      setAddCompanyId('')
+      await load()
+    } catch (err) {
+      alert(err.message)
+    } finally {
+      setOrgsBusy(false)
+    }
+  }
+
+  async function unlinkCompany(companyId) {
+    if (!orgsUser) return
+    if (!confirm('Отвязать эту организацию от пользователя?')) return
+    setOrgsBusy(true)
+    try {
+      const data = await api(`/api/admin/users/${orgsUser.id}/companies/${companyId}`, {
+        method: 'DELETE',
+      })
+      setLinkedCompanies(data.items || [])
+      await load()
+    } catch (err) {
+      alert(err.message)
+    } finally {
+      setOrgsBusy(false)
+    }
   }
 
   async function patchUser(id, body) {
@@ -403,12 +457,15 @@ export default function AdminUsersPage() {
               </select>
             </label>
             <label className="block text-xs font-bold uppercase tracking-wide text-[#9db8d4] md:col-span-2">
-              Организация
+              Основная организация
               <select className={`${field} text-base font-semibold`} value={form.companyId} onChange={(e) => setForm({ ...form, companyId: e.target.value })}>
                 {companyOptions.map((o) => (
                   <option key={String(o.value)} value={o.value}>{o.label}</option>
                 ))}
               </select>
+              <span className="mt-1 block text-[11px] font-normal normal-case tracking-normal text-[#9db8d4]">
+                Дополнительные организации можно привязать позже кнопкой «Орг.» в таблице.
+              </span>
             </label>
             <div className="space-y-3 md:col-span-2">
               <div className="text-xs font-bold uppercase tracking-wide text-[#9db8d4]">Пароль</div>
@@ -459,6 +516,89 @@ export default function AdminUsersPage() {
           </button>
         </form>
       )}
+
+      {orgsUser ? (
+        <div className="rounded-2xl border border-white/[0.08] bg-[#0d213f] p-5">
+          <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <h2 className="m-0 flex items-center gap-2 text-base font-bold text-white">
+                <Building2 size={16} className="text-[#8fd2ff]" />
+                Организации: {orgsUser.full_name || orgsUser.email}
+              </h2>
+              <p className="mt-1 mb-0 text-sm text-[#9db8d4]">
+                Создайте компанию в разделе «Клиенты», затем привяжите её к пользователю здесь.
+              </p>
+            </div>
+            <button
+              type="button"
+              className="inline-flex items-center gap-1 rounded-lg bg-white/[0.06] px-3 py-2 text-xs font-bold text-[#eaf4ff] hover:bg-white/[0.1]"
+              onClick={() => setOrgsUser(null)}
+            >
+              <X size={14} /> Закрыть
+            </button>
+          </div>
+
+          <div className="mb-4 flex flex-wrap items-end gap-2">
+            <label className="block min-w-[240px] flex-1 text-xs font-bold uppercase tracking-wide text-[#9db8d4]">
+              Добавить организацию
+              <select
+                className={field}
+                value={addCompanyId}
+                onChange={(e) => setAddCompanyId(e.target.value)}
+              >
+                <option value="">Выберите компанию</option>
+                {companies
+                  .filter((c) => !linkedCompanies.some((lc) => Number(lc.id) === Number(c.id)))
+                  .map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.name}{c.unp ? ` · УНП ${c.unp}` : ''}
+                    </option>
+                  ))}
+              </select>
+            </label>
+            <button
+              type="button"
+              disabled={orgsBusy || !addCompanyId}
+              onClick={linkCompany}
+              className="inline-flex h-10 items-center gap-1.5 rounded-lg bg-[#258dff] px-4 text-sm font-bold text-white hover:bg-[#3b9eff] disabled:opacity-50"
+            >
+              <Plus size={14} /> Привязать
+            </button>
+          </div>
+
+          <div className="space-y-2">
+            {linkedCompanies.map((c) => (
+              <div
+                key={c.id}
+                className="flex flex-wrap items-center justify-between gap-2 rounded-xl bg-white/[0.04] px-3 py-2.5"
+              >
+                <div>
+                  <div className="font-semibold text-white">
+                    {c.name}
+                    {c.isActive ? (
+                      <span className="ml-2 text-[11px] font-bold text-[#8fd2ff]">активная</span>
+                    ) : null}
+                  </div>
+                  <div className="text-xs text-[#9db8d4]">УНП {c.unp || '—'}</div>
+                </div>
+                <button
+                  type="button"
+                  disabled={orgsBusy}
+                  onClick={() => unlinkCompany(c.id)}
+                  className="inline-flex items-center gap-1 rounded-md bg-[#e11d48]/90 px-2.5 py-1.5 text-xs font-bold text-white hover:bg-[#fb7185]"
+                >
+                  <Trash2 size={12} /> Отвязать
+                </button>
+              </div>
+            ))}
+            {!linkedCompanies.length && !orgsBusy ? (
+              <div className="rounded-xl bg-white/[0.03] px-3 py-6 text-center text-sm text-[#9db8d4]">
+                К пользователю пока не привязано ни одной организации
+              </div>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
 
       <div
         ref={tableWrapRef}
@@ -538,19 +678,31 @@ export default function AdminUsersPage() {
                     <InlineCell type="select" value={u.role} options={roleOptions} onSave={(role) => patchUser(u.id, { role })} />
                   </td>
                   <td className={cell} style={{ width: cols.company, minWidth: cols.company }}>
-                    <InlineCell
-                      type="select"
-                      value={u.company_id ? String(u.company_id) : ''}
-                      display={u.company_name || '—'}
-                      options={companyOptions}
-                      onSave={(companyId) => patchUser(u.id, { companyId: companyId ? Number(companyId) : null })}
-                    />
+                    <div className="px-1 py-1 text-sm">
+                      <div className="font-medium text-[#eaf4ff]">{u.company_name || '—'}</div>
+                      {Number(u.companies_count) > 1 ? (
+                        <div className="text-[11px] text-[#9db8d4]">
+                          ещё {Number(u.companies_count) - 1}
+                        </div>
+                      ) : null}
+                    </div>
                   </td>
                   <td className={cell} style={{ width: cols.status, minWidth: cols.status }}>
                     <InlineCell type="select" value={u.status} options={statusOptions} onSave={(status) => patchUser(u.id, { status })} />
                   </td>
                   <td className={`${cell} px-3 py-2`} style={{ width: cols.actions, minWidth: cols.actions }}>
                     <div className="flex items-center gap-2 whitespace-nowrap">
+                      {u.role === 'client' ? (
+                        <button
+                          type="button"
+                          title="Организации пользователя"
+                          onClick={() => openOrgs(u)}
+                          className="inline-flex items-center gap-1 rounded-md border-0 bg-[#0b3a66] px-2.5 py-1.5 text-xs font-extrabold text-[#8fd2ff] hover:bg-[#134878]"
+                        >
+                          <Building2 size={13} />
+                          Орг.
+                        </button>
+                      ) : null}
                       <button
                         type="button"
                         title="Отправить приглашение на email"

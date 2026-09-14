@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Tab, TabGroup, TabList } from '@headlessui/react'
-import { ArrowDownLeft, ArrowUpRight, Download, Landmark, RefreshCw, Search } from 'lucide-react'
+import { ArrowDownLeft, ArrowUpRight, Download, Landmark, RefreshCw } from 'lucide-react'
 import { api, apiDownload } from '../../api'
+import Button from '../../ui/Button'
+import SearchField from '../../ui/SearchField'
+import SegmentedControl from '../../ui/SegmentedControl'
 
 function periodDefaults() {
   const to = new Date()
@@ -31,7 +33,7 @@ const tabs = [
 ]
 
 const fieldClass =
-  'mt-1.5 h-10 w-full rounded-lg border border-[#2a5f8f] bg-[#071529] px-3 text-sm font-medium text-[#f3f8ff] outline-none focus:border-[#4ea8ff]'
+  'mt-1.5 h-10 w-full rounded-lg border border-transparent bg-white/[0.06] px-3 text-sm font-medium text-[#f3f8ff] outline-none focus:bg-white/[0.09] focus:ring-2 focus:ring-[#4ea8ff]/35'
 
 export default function AdminBankingPage() {
   const [tab, setTab] = useState('income')
@@ -107,7 +109,6 @@ export default function AdminBankingPage() {
   }
 
   const currency = account?.currency || 'BYN'
-  const selectedTabIndex = Math.max(0, tabs.findIndex((t) => t.id === tab))
   const emptyLabel = !configured
     ? 'Нет данных: Priorbank API ещё не подключён'
     : loading
@@ -123,45 +124,23 @@ export default function AdminBankingPage() {
             Поступления, списания и выписка по расчётному счёту из Priorbank API.
           </p>
         </div>
-        <button type="button" className="cab-btn ghost" onClick={load} disabled={loading}>
-          <RefreshCw size={15} className={loading ? 'animate-spin' : undefined} />
+        <Button variant="secondary" disabled={loading} onClick={load}>
+          <RefreshCw className={`size-4 ${loading ? 'animate-spin' : ''}`} />
           Обновить
-        </button>
+        </Button>
       </div>
 
-      <TabGroup
-        selectedIndex={selectedTabIndex}
-        onChange={(index) => setTab(tabs[index].id)}
-      >
-        <TabList className="inline-flex w-full max-w-xl flex-wrap gap-1 rounded-2xl border border-[#2a5f8f] bg-[#071529]/90 p-1.5 sm:flex-nowrap">
-          {tabs.map(({ id, label, icon: Icon }) => (
-            <Tab
-              key={id}
-              className={({ selected }) =>
-                [
-                  'inline-flex min-h-11 flex-1 items-center justify-center gap-2 rounded-xl px-3 text-sm font-bold outline-none transition focus-visible:ring-2 focus-visible:ring-[#4ea8ff]/60',
-                  selected
-                    ? 'bg-gradient-to-br from-[#258dff] to-[#1267dd] text-white shadow-[0_10px_24px_rgba(38,151,255,0.28)]'
-                    : 'text-[#9db8d4] hover:bg-white/5 hover:text-[#eaf4ff]',
-                ].join(' ')
-              }
-            >
-              <Icon size={15} />
-              {label}
-            </Tab>
-          ))}
-        </TabList>
-      </TabGroup>
+      <SegmentedControl items={tabs} value={tab} onChange={setTab} />
 
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-        <div className="rounded-2xl border border-[#2a5f8f] bg-[#0b1f3a] p-4">
+        <div className="rounded-2xl border border-white/[0.06] bg-[#0b1f3a] p-4">
           <div className="text-xs font-bold uppercase tracking-wide text-[#9db8d4]">Счёт</div>
           <div className="mt-2 font-mono text-sm font-semibold text-[#8fd2ff]">
             {account?.iban || '—'}
           </div>
           <div className="mt-1 text-xs text-[#9db8d4]">{account?.name || 'Priorbank'}</div>
         </div>
-        <div className="rounded-2xl border border-[#2a5f8f] bg-[#0b1f3a] p-4">
+        <div className="rounded-2xl border border-white/[0.06] bg-[#0b1f3a] p-4">
           <div className="text-xs font-bold uppercase tracking-wide text-[#9db8d4]">Остаток</div>
           <div className="mt-2 text-xl font-bold text-white">
             {account?.balance == null ? '—' : money(account.balance, currency)}
@@ -170,19 +149,19 @@ export default function AdminBankingPage() {
             {configured ? 'Источник: Priorbank' : 'API не настроен'}
           </div>
         </div>
-        <div className="rounded-2xl border border-[#2a5f8f] bg-[#0b1f3a] p-4">
+        <div className="rounded-2xl border border-white/[0.06] bg-[#0b1f3a] p-4">
           <div className="text-xs font-bold uppercase tracking-wide text-[#9db8d4]">Доходы</div>
           <div className="mt-2 text-xl font-bold text-[#7dffc2]">{money(summary.income, currency)}</div>
           <div className="mt-1 text-xs text-[#9db8d4]">{summary.incomeCount} операций</div>
         </div>
-        <div className="rounded-2xl border border-[#2a5f8f] bg-[#0b1f3a] p-4">
+        <div className="rounded-2xl border border-white/[0.06] bg-[#0b1f3a] p-4">
           <div className="text-xs font-bold uppercase tracking-wide text-[#9db8d4]">Расходы</div>
           <div className="mt-2 text-xl font-bold text-[#ff9b9b]">{money(summary.expense, currency)}</div>
           <div className="mt-1 text-xs text-[#9db8d4]">{summary.expenseCount} операций</div>
         </div>
       </div>
 
-      <div className="rounded-2xl border border-[#2a5f8f] bg-[#0b1f3a] p-4 sm:p-5">
+      <div className="rounded-2xl border border-white/[0.06] bg-[#0b1f3a] p-4 sm:p-5">
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
           <label className="block text-xs font-bold uppercase tracking-wide text-[#9db8d4]">
             С
@@ -204,19 +183,16 @@ export default function AdminBankingPage() {
           </label>
           <label className="block text-xs font-bold uppercase tracking-wide text-[#9db8d4] sm:col-span-2 lg:col-span-2">
             Поиск
-            <div className="relative mt-1.5">
-              <Search size={14} className="pointer-events-none absolute top-3 left-3 text-[#9db8d4]" />
-              <input
-                className={`${fieldClass} mt-0 pl-9`}
-                value={filters.q}
-                placeholder="Контрагент, УНП, назначение…"
-                onChange={(e) => setFilters((prev) => ({ ...prev, q: e.target.value }))}
-              />
-            </div>
+            <SearchField
+              className="mt-1.5"
+              value={filters.q}
+              placeholder="Контрагент, УНП, назначение…"
+              onChange={(e) => setFilters((prev) => ({ ...prev, q: e.target.value }))}
+            />
           </label>
         </div>
 
-        <div className="mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-[#2a5f8f]/60 pt-4">
+        <div className="mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-white/[0.06] pt-4">
           <div className="text-xs text-[#9db8d4]">
             {fetchedAt
               ? `Обновлено ${new Date(fetchedAt).toLocaleString('ru-RU')}`
@@ -228,27 +204,27 @@ export default function AdminBankingPage() {
             ) : null}
           </div>
           {tab === 'statement' ? (
-            <button type="button" className="cab-btn primary" onClick={exportCsv}>
-              <Download size={15} />
+            <Button variant="primary" onClick={exportCsv}>
+              <Download className="size-4" />
               Скачать CSV
-            </button>
+            </Button>
           ) : null}
         </div>
       </div>
 
       {error ? (
-        <div className="rounded-xl border border-[#ff6b6b]/40 bg-[#3a1218] px-4 py-3 text-sm text-[#ffb4b4]">
+        <div className="rounded-xl border border-red-400/20 bg-[#3a1218] px-4 py-3 text-sm text-[#ffb4b4]">
           {error}
         </div>
       ) : null}
 
       {!configured && message ? (
-        <div className="rounded-xl border border-[#2a5f8f] bg-[#071529]/80 px-4 py-3 text-sm text-[#cfe6ff]">
+        <div className="rounded-xl border border-white/[0.06] bg-[#071529]/80 px-4 py-3 text-sm text-[#cfe6ff]">
           {message}
         </div>
       ) : null}
 
-      <div className="overflow-x-auto rounded-2xl border border-[#2a5f8f] bg-[#0b1f3a]">
+      <div className="overflow-x-auto rounded-2xl border border-white/[0.06] bg-[#0b1f3a]">
         <table className="w-full min-w-[860px] border-collapse text-left text-sm">
           <thead className="bg-[#071529] text-xs uppercase tracking-wide text-[#9db8d4]">
             <tr>
@@ -266,7 +242,7 @@ export default function AdminBankingPage() {
             {items.map((row) => {
               const isExpense = row.direction === 'expense'
               return (
-                <tr key={row.id} className="border-t border-[#2a5f8f]/60 align-top">
+                <tr key={row.id} className="border-t border-white/[0.06] align-top">
                   <td className="px-3 py-3 whitespace-nowrap text-[#cfe6ff]">{formatDate(row.date)}</td>
                   {tab === 'statement' ? (
                     <td className="px-3 py-3">

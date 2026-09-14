@@ -41,9 +41,13 @@ export default function OperationsPage() {
           <button
             type="button"
             className="cab-btn ghost"
-            onClick={() => apiDownload('/api/cabinet/export/transactions.csv', 'transactions.csv')}
+            onClick={() =>
+              apiDownload('/api/cabinet/export/transactions.csv', 'operations.csv').catch((e) =>
+                setError(e.message),
+              )
+            }
           >
-            Экспорт CSV
+            Экспорт Excel
           </button>
         </div>
       </div>

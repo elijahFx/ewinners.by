@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Tab, TabGroup, TabList } from '@headlessui/react'
-import { CheckCircle2, Download, Eye, Receipt, Search } from 'lucide-react'
+import { CheckCircle2, Download, Eye, Receipt } from 'lucide-react'
 import { api, apiDownload, apiOpen } from '../../api'
+import Button from '../../ui/Button'
+import SearchField from '../../ui/SearchField'
+import SegmentedControl from '../../ui/SegmentedControl'
 
 const STATUS_LABEL = {
   created: 'Создан',
@@ -33,7 +35,7 @@ function canMarkPaid(status) {
 }
 
 const fieldClass =
-  'mt-1.5 h-10 w-full rounded-lg border border-[#2a5f8f] bg-[#071529] px-3 text-sm font-medium text-[#f3f8ff] outline-none focus:border-[#4ea8ff]'
+  'mt-1.5 h-10 w-full rounded-lg border border-transparent bg-white/[0.06] px-3 text-sm font-medium text-[#f3f8ff] outline-none focus:bg-white/[0.09] focus:ring-2 focus:ring-[#4ea8ff]/35'
 
 export default function AdminInvoicesPage() {
   const [items, setItems] = useState([])
@@ -44,11 +46,6 @@ export default function AdminInvoicesPage() {
   const [loading, setLoading] = useState(true)
   const [busyId, setBusyId] = useState(null)
   const [error, setError] = useState('')
-
-  const selectedTabIndex = Math.max(
-    0,
-    STATUS_TABS.findIndex((t) => t.id === status),
-  )
 
   const queryString = useMemo(() => {
     const p = new URLSearchParams()
@@ -106,30 +103,13 @@ export default function AdminInvoicesPage() {
         </p>
       </div>
 
-      <TabGroup
-        selectedIndex={selectedTabIndex}
-        onChange={(index) => setStatus(STATUS_TABS[index].id)}
-      >
-        <TabList className="inline-flex w-full max-w-2xl flex-wrap gap-1 rounded-2xl border border-[#2a5f8f] bg-[#071529]/90 p-1.5 sm:flex-nowrap">
-          {STATUS_TABS.map((t) => (
-            <Tab
-              key={t.id || 'all'}
-              className={({ selected }) =>
-                [
-                  'inline-flex min-h-11 flex-1 items-center justify-center gap-2 rounded-xl px-3 text-sm font-bold outline-none transition focus-visible:ring-2 focus-visible:ring-[#4ea8ff]/60',
-                  selected
-                    ? 'bg-gradient-to-br from-[#258dff] to-[#1267dd] text-white shadow-[0_10px_24px_rgba(38,151,255,0.28)]'
-                    : 'text-[#9db8d4] hover:bg-white/5 hover:text-[#eaf4ff]',
-                ].join(' ')
-              }
-            >
-              {t.label}
-            </Tab>
-          ))}
-        </TabList>
-      </TabGroup>
+      <SegmentedControl
+        items={STATUS_TABS}
+        value={status}
+        onChange={setStatus}
+      />
 
-      <div className="rounded-2xl border border-[#2a5f8f] bg-[#0b1f3a] p-4 sm:p-5">
+      <div className="rounded-2xl border border-white/[0.06] bg-[#0b1f3a] p-4 sm:p-5">
         <div className="grid gap-3 sm:grid-cols-2">
           <label className="block text-xs font-bold uppercase tracking-wide text-[#9db8d4]">
             Организация
@@ -148,26 +128,23 @@ export default function AdminInvoicesPage() {
           </label>
           <label className="block text-xs font-bold uppercase tracking-wide text-[#9db8d4]">
             Поиск
-            <div className="relative mt-1.5">
-              <Search size={14} className="pointer-events-none absolute top-3 left-3 text-[#9db8d4]" />
-              <input
-                className={`${fieldClass} mt-0 pl-9`}
-                value={q}
-                placeholder="Номер счёта, УНП, компания…"
-                onChange={(e) => setQ(e.target.value)}
-              />
-            </div>
+            <SearchField
+              className="mt-1.5"
+              value={q}
+              placeholder="Номер счёта, УНП, компания…"
+              onChange={(e) => setQ(e.target.value)}
+            />
           </label>
         </div>
       </div>
 
       {error ? (
-        <div className="rounded-xl border border-[#ff6b6b]/40 bg-[#3a1218] px-4 py-3 text-sm text-[#ffb4b4]">
+        <div className="rounded-xl border border-red-400/20 bg-[#3a1218] px-4 py-3 text-sm text-[#ffb4b4]">
           {error}
         </div>
       ) : null}
 
-      <div className="overflow-x-auto rounded-2xl border border-[#2a5f8f] bg-[#0b1f3a]">
+      <div className="overflow-x-auto rounded-2xl border border-white/[0.06] bg-[#0b1f3a]">
         <table className="w-full min-w-[980px] border-collapse text-left text-sm">
           <thead className="bg-[#071529] text-xs uppercase tracking-wide text-[#9db8d4]">
             <tr>
@@ -181,7 +158,7 @@ export default function AdminInvoicesPage() {
           </thead>
           <tbody>
             {items.map((invoice) => (
-              <tr key={invoice.id} className="border-t border-[#2a5f8f]/60 align-middle">
+              <tr key={invoice.id} className="border-t border-white/[0.06] align-middle">
                 <td className="px-3 py-3 font-semibold text-white">{invoice.number}</td>
                 <td className="px-3 py-3 whitespace-nowrap text-[#cfe6ff]">
                   {new Date(invoice.created_at).toLocaleString('ru-RU')}
@@ -204,24 +181,22 @@ export default function AdminInvoicesPage() {
                   </span>
                 </td>
                 <td className="px-3 py-3">
-                  <div className="flex flex-wrap gap-2">
-                    <button
-                      type="button"
-                      className="cab-btn ghost"
-                      style={{ minHeight: 34, padding: '0 12px', fontSize: 12 }}
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Button
+                      size="sm"
+                      variant="secondary"
                       onClick={() =>
                         apiOpen(`/api/admin/invoices/${invoice.id}/view`).catch((e) =>
                           alert(e.message),
                         )
                       }
                     >
-                      <Eye size={13} />
+                      <Eye className="size-3.5" />
                       Смотреть
-                    </button>
-                    <button
-                      type="button"
-                      className="cab-btn ghost"
-                      style={{ minHeight: 34, padding: '0 12px', fontSize: 12 }}
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="secondary"
                       onClick={() =>
                         apiDownload(
                           `/api/admin/invoices/${invoice.id}/download`,
@@ -229,20 +204,19 @@ export default function AdminInvoicesPage() {
                         ).catch((e) => alert(e.message))
                       }
                     >
-                      <Download size={13} />
+                      <Download className="size-3.5" />
                       Скачать
-                    </button>
+                    </Button>
                     {canMarkPaid(invoice.status) ? (
-                      <button
-                        type="button"
-                        className="cab-btn primary"
-                        style={{ minHeight: 34, padding: '0 12px', fontSize: 12 }}
+                      <Button
+                        size="sm"
+                        variant="success"
                         disabled={busyId === invoice.id}
                         onClick={() => markPaid(invoice)}
                       >
-                        <CheckCircle2 size={13} />
+                        <CheckCircle2 className="size-3.5" />
                         {busyId === invoice.id ? 'Зачисление…' : 'Оплачен'}
-                      </button>
+                      </Button>
                     ) : null}
                   </div>
                 </td>
@@ -251,7 +225,7 @@ export default function AdminInvoicesPage() {
             {!items.length ? (
               <tr>
                 <td colSpan={6} className="px-3 py-12 text-center text-[#9db8d4]">
-                  <Receipt size={18} className="mr-2 inline opacity-60" />
+                  <Receipt className="mr-2 inline size-[18px] opacity-60" />
                   {loading ? 'Загрузка…' : 'Счетов по фильтру нет'}
                 </td>
               </tr>

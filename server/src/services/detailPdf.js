@@ -34,6 +34,13 @@ export async function generateDetailPdf({ number, company, items, periodLabel, c
   doc.moveTo(left, y).lineTo(left + width, y).strokeColor('#93c5fd').stroke();
   y += 8;
 
+  if (!items.length) {
+    doc.font('Regular').fontSize(10).fillColor('#666').text('За выбранный период списаний нет.', left, y, {
+      width,
+    });
+    y += 24;
+  }
+
   let total = 0;
   doc.font('Regular').fontSize(9).fillColor('#333');
   for (const item of items) {

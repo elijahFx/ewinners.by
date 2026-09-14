@@ -48,6 +48,39 @@ export async function linkUserCompany(userId, companyId, { makeDefault = false }
   }
 }
 
+export async function unlinkUserCompany(userId, companyId) {
+  await query(
+    `DELETE FROM user_companies
+     WHERE user_id = :user_id AND company_id = :company_id`,
+    { user_id: userId, company_id: companyId },
+  );
+
+  const userRows = await query(`SELECT company_id FROM users WHERE id = :user_id LIMIT 1`, {
+    user_id: userId,
+  });
+  if (Number(userRows[0]?.company_id) === Number(companyId)) {
+    const fallback = await query(
+      `SELECT company_id FROM user_companies
+       WHERE user_id = :user_id
+       ORDER BY is_default DESC, company_id ASC
+       LIMIT 1`,
+      { user_id: userId },
+    );
+    const nextId = fallback[0]?.company_id || null;
+    await query(`UPDATE users SET company_id = :company_id WHERE id = :user_id`, {
+      company_id: nextId,
+      user_id: userId,
+    });
+    if (nextId) {
+      await query(
+        `UPDATE user_companies SET is_default = (company_id = :company_id)
+         WHERE user_id = :user_id`,
+        { company_id: nextId, user_id: userId },
+      );
+    }
+  }
+}
+
 export async function setActiveCompany(userId, companyId) {
   const ok = await userHasCompany(userId, companyId);
   if (!ok) throw new Error('Нет доступа к этой организации');

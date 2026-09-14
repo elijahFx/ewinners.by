@@ -17,7 +17,7 @@ import {
   isMailConfigured,
   sendInviteEmail,
 } from '../services/authMail.js';
-import { linkUserCompany } from '../services/userCompanies.js';
+import { linkUserCompany, unlinkUserCompany, listUserCompanies, mapCompany } from '../services/userCompanies.js';
 import {
   fetchPriorbankStatement,
   getPriorbankStatus,
@@ -210,12 +210,85 @@ router.patch('/companies/:id', requireRoles('admin'), async (req, res) => {
 
 router.get('/users', async (_req, res) => {
   const rows = await query(
-    `SELECT u.id, u.email, u.phone, u.full_name, u.avatar_url, u.role, u.status, u.company_id, u.created_at, c.name AS company_name
+    `SELECT u.id, u.email, u.phone, u.full_name, u.avatar_url, u.role, u.status, u.company_id, u.created_at,
+            c.name AS company_name,
+            (
+              SELECT COUNT(*) FROM user_companies uc WHERE uc.user_id = u.id
+            ) AS companies_count
      FROM users u
      LEFT JOIN companies c ON c.id = u.company_id
      ORDER BY u.id DESC`,
   );
   res.json({ items: rows });
+});
+
+router.get('/users/:id/companies', requireRoles('admin', 'accountant'), async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const user = await query('SELECT id, role FROM users WHERE id = :id LIMIT 1', { id });
+    if (!user[0]) return res.status(404).json({ error: 'Пользователь не найден' });
+    const rows = await listUserCompanies(id);
+    res.json({
+      items: rows.map(mapCompany),
+      activeCompanyId: rows.find((r) => Number(r.is_active))?.id || null,
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Не удалось загрузить организации пользователя' });
+  }
+});
+
+router.post('/users/:id/companies', requireRoles('admin'), async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const companyId = Number(req.body.companyId);
+    if (!companyId) return res.status(400).json({ error: 'Укажите companyId' });
+
+    const user = await query('SELECT id, company_id, role FROM users WHERE id = :id LIMIT 1', { id });
+    if (!user[0]) return res.status(404).json({ error: 'Пользователь не найден' });
+    if (user[0].role !== 'client') {
+      return res.status(400).json({ error: 'Организации привязываются только к клиентам' });
+    }
+
+    const company = await query('SELECT id, name FROM companies WHERE id = :id LIMIT 1', {
+      id: companyId,
+    });
+    if (!company[0]) return res.status(404).json({ error: 'Компания не найдена' });
+
+    const makeDefault = !!req.body.makeDefault || !user[0].company_id;
+    await linkUserCompany(id, companyId, { makeDefault });
+    await audit(req.user.id, 'link_user_company', 'user', id, { companyId, makeDefault });
+
+    const rows = await listUserCompanies(id);
+    res.status(201).json({
+      items: rows.map(mapCompany),
+      activeCompanyId: rows.find((r) => Number(r.is_active))?.id || null,
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message || 'Не удалось привязать организацию' });
+  }
+});
+
+router.delete('/users/:id/companies/:companyId', requireRoles('admin'), async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const companyId = Number(req.params.companyId);
+    const user = await query('SELECT id FROM users WHERE id = :id LIMIT 1', { id });
+    if (!user[0]) return res.status(404).json({ error: 'Пользователь не найден' });
+
+    await unlinkUserCompany(id, companyId);
+    await audit(req.user.id, 'unlink_user_company', 'user', id, { companyId });
+
+    const rows = await listUserCompanies(id);
+    res.json({
+      items: rows.map(mapCompany),
+      activeCompanyId: rows.find((r) => Number(r.is_active))?.id || null,
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message || 'Не удалось отвязать организацию' });
+  }
 });
 
 router.post('/users', requireRoles('admin'), async (req, res) => {

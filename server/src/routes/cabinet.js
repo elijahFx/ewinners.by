@@ -10,7 +10,6 @@ import { query } from '../db.js';
 import { authRequired, requireRoles } from '../middleware/auth.js';
 import { setCompanyApiKey } from '../services/apiKeys.js';
 import {
-  linkUserCompany,
   listUserCompanies,
   mapCompany,
   setActiveCompany,
@@ -324,15 +323,24 @@ router.get('/documents', async (req, res) => {
 
 router.post('/documents/detail/generate', async (req, res) => {
   try {
-    const companyId = companyScope(req);
+    const companyId = await resolveClientCompanyId(req, req.body?.companyId);
     if (!companyId) return res.status(400).json({ error: 'Компания не назначена' });
     const companies = await query('SELECT * FROM companies WHERE id = :id LIMIT 1', { id: companyId });
     if (!companies[0]) return res.status(404).json({ error: 'Компания не найдена' });
-    const doc = await ensureDetailDocument(companyId, companies[0]);
-    res.json({ document: doc });
+    const result = await ensureDetailDocument(companyId, companies[0], {
+      from: req.body?.from,
+      to: req.body?.to,
+    });
+    await audit(req.user.id, 'generate_detail', 'document', result.document.id, {
+      companyId,
+      number: result.document.number,
+      updated: result.updated,
+      itemCount: result.itemCount,
+    });
+    res.json(result);
   } catch (err) {
     console.error(err);
-    res.status(500).json({ error: err.message || 'Не удалось сформировать детализацию' });
+    res.status(err.status || 500).json({ error: err.message || 'Не удалось сформировать детализацию' });
   }
 });
 
@@ -538,48 +546,10 @@ router.get('/companies', async (req, res) => {
   }
 });
 
-router.post('/companies', async (req, res) => {
-  try {
-    if (req.user.role !== 'client') {
-      return res.status(403).json({ error: 'Недостаточно прав' });
-    }
-    const name = String(req.body.name || '').trim();
-    const unp = String(req.body.unp || '').replace(/\D/g, '');
-    const entityType = ['ooo', 'ip', 'other'].includes(req.body.entityType)
-      ? req.body.entityType
-      : 'ooo';
-    if (!name) return res.status(400).json({ error: 'Укажите название' });
-    if (unp.length !== 9) return res.status(400).json({ error: 'УНП должен содержать 9 цифр' });
-
-    const result = await query(
-      `INSERT INTO companies
-        (name, entity_type, unp, legal_address, bank_name, iban, bic, status)
-       VALUES
-        (:name, :entity_type, :unp, :legal_address, :bank_name, :iban, :bic, 'active')`,
-      {
-        name,
-        entity_type: entityType,
-        unp,
-        legal_address: req.body.legalAddress || null,
-        bank_name: req.body.bankName || null,
-        iban: req.body.iban || null,
-        bic: req.body.bic || null,
-      },
-    );
-    const companyId = result.insertId;
-    const makeDefault = !req.user.company_id || !!req.body.activate;
-    await linkUserCompany(req.user.id, companyId, { makeDefault });
-    await audit(req.user.id, 'create_own_company', 'company', companyId, { name, unp, entityType });
-
-    const rows = await query('SELECT * FROM companies WHERE id = :id', { id: companyId });
-    res.status(201).json({
-      company: mapCompany({ ...rows[0], is_active: makeDefault ? 1 : 0 }),
-      activeCompanyId: makeDefault ? companyId : req.user.company_id,
-    });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: err.message || 'Не удалось создать организацию' });
-  }
+router.post('/companies', async (_req, res) => {
+  return res.status(403).json({
+    error: 'Клиент не может создавать организации. Их добавляет администратор.',
+  });
 });
 
 router.post('/companies/:id/activate', async (req, res) => {
@@ -603,116 +573,16 @@ router.post('/companies/:id/activate', async (req, res) => {
   }
 });
 
-router.put('/companies/:id', async (req, res) => {
-  try {
-    if (req.user.role !== 'client' && req.user.role !== 'admin') {
-      return res.status(403).json({ error: 'Недостаточно прав' });
-    }
-    const companyId = Number(req.params.id);
-    if (req.user.role === 'client') {
-      if (!(await userHasCompany(req.user.id, companyId))) {
-        return res.status(403).json({ error: 'Нет доступа к этой организации' });
-      }
-    }
-
-    const entityType = ['ooo', 'ip', 'other'].includes(req.body.entityType)
-      ? req.body.entityType
-      : null;
-    const name =
-      req.body.name != null ? String(req.body.name).trim() || null : null;
-    const unp =
-      req.body.unp != null ? String(req.body.unp).replace(/\D/g, '') || null : null;
-    if (unp && unp.length !== 9) {
-      return res.status(400).json({ error: 'УНП должен содержать 9 цифр' });
-    }
-
-    await query(
-      `UPDATE companies SET
-         name = COALESCE(:name, name),
-         entity_type = COALESCE(:entity_type, entity_type),
-         unp = COALESCE(:unp, unp),
-         legal_address = COALESCE(:legal_address, legal_address),
-         bank_name = COALESCE(:bank_name, bank_name),
-         iban = COALESCE(:iban, iban),
-         bic = COALESCE(:bic, bic)
-       WHERE id = :id`,
-      {
-        id: companyId,
-        name,
-        entity_type: entityType,
-        unp,
-        legal_address:
-          req.body.legalAddress !== undefined ? req.body.legalAddress || null : null,
-        bank_name: req.body.bankName !== undefined ? req.body.bankName || null : null,
-        iban: req.body.iban !== undefined ? req.body.iban || null : null,
-        bic: req.body.bic !== undefined ? req.body.bic || null : null,
-      },
-    );
-
-    // Allow clearing fields when empty string sent
-    if (req.body.legalAddress === '') {
-      await query('UPDATE companies SET legal_address = NULL WHERE id = :id', { id: companyId });
-    }
-    if (req.body.bankName === '') {
-      await query('UPDATE companies SET bank_name = NULL WHERE id = :id', { id: companyId });
-    }
-    if (req.body.iban === '') {
-      await query('UPDATE companies SET iban = NULL WHERE id = :id', { id: companyId });
-    }
-    if (req.body.bic === '') {
-      await query('UPDATE companies SET bic = NULL WHERE id = :id', { id: companyId });
-    }
-
-    await audit(req.user.id, 'update_company_requisites', 'company', companyId, req.body);
-    const rows = await query('SELECT * FROM companies WHERE id = :id', { id: companyId });
-    res.json({
-      company: mapCompany({
-        ...rows[0],
-        is_active: req.user.company_id === companyId ? 1 : 0,
-      }),
-    });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'Не удалось обновить организацию' });
-  }
+router.put('/companies/:id', async (_req, res) => {
+  return res.status(403).json({
+    error: 'Редактирование организаций доступно только администратору в разделе «Клиенты».',
+  });
 });
 
-router.put('/company', async (req, res) => {
-  try {
-    if (req.user.role !== 'client' && req.user.role !== 'admin') {
-      return res.status(403).json({ error: 'Недостаточно прав' });
-    }
-    const companyId =
-      req.user.role === 'admin' && req.body.companyId
-        ? Number(req.body.companyId)
-        : req.user.company_id;
-    if (!companyId) return res.status(400).json({ error: 'Компания не назначена' });
-    if (req.user.role === 'client' && !(await userHasCompany(req.user.id, companyId))) {
-      return res.status(403).json({ error: 'Нет доступа к этой организации' });
-    }
-
-    await query(
-      `UPDATE companies SET
-         legal_address = COALESCE(:legal_address, legal_address),
-         bank_name = COALESCE(:bank_name, bank_name),
-         iban = COALESCE(:iban, iban),
-         bic = COALESCE(:bic, bic)
-       WHERE id = :id`,
-      {
-        id: companyId,
-        legal_address: req.body.legalAddress !== undefined ? req.body.legalAddress || null : null,
-        bank_name: req.body.bankName !== undefined ? req.body.bankName || null : null,
-        iban: req.body.iban !== undefined ? req.body.iban || null : null,
-        bic: req.body.bic !== undefined ? req.body.bic || null : null,
-      },
-    );
-    await audit(req.user.id, 'update_company_requisites', 'company', companyId, req.body);
-    const rows = await query('SELECT * FROM companies WHERE id = :id', { id: companyId });
-    res.json({ company: rows[0] });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'Не удалось обновить реквизиты' });
-  }
+router.put('/company', async (_req, res) => {
+  return res.status(403).json({
+    error: 'Редактирование реквизитов доступно только администратору.',
+  });
 });
 
 router.get('/notifications', async (req, res) => {
@@ -799,8 +669,16 @@ router.get('/export/transactions.csv', async (req, res) => {
       { company_id: companyId },
     );
 
+    // Force Excel to treat values as text (avoids ##### for narrow date columns
+    // and wrong locale auto-parsing of DD.MM.YYYY).
+    const cell = (value) => {
+      const s = String(value ?? '').replace(/"/g, '""');
+      return `"=""${s}"""`;
+    };
+
     const header = [
       'Дата',
+      'Время',
       'Тип',
       'Категория',
       'Действие',
@@ -812,27 +690,29 @@ router.get('/export/transactions.csv', async (req, res) => {
       'Баланс после',
       'Комментарий',
     ];
-    const lines = [header.join(';')];
+    const lines = [header.map(cell).join(';')];
     for (const r of rows) {
+      const created = dayjs(r.created_at);
       lines.push(
         [
-          dayjs(r.created_at).format('DD.MM.YYYY HH:mm'),
-          r.type,
-          r.category,
-          r.service_name || '',
-          r.project_name || '',
-          r.employee_name || '',
-          r.quantity ?? '',
-          r.unit_price ?? '',
-          r.amount,
-          r.balance_after,
-          (r.comment || '').replace(/;/g, ','),
+          cell(created.isValid() ? created.format('DD.MM.YYYY') : ''),
+          cell(created.isValid() ? created.format('HH:mm') : ''),
+          cell(r.type),
+          cell(r.category),
+          cell(r.service_name || ''),
+          cell(r.project_name || ''),
+          cell(r.employee_name || ''),
+          cell(r.quantity ?? ''),
+          cell(r.unit_price ?? ''),
+          cell(r.amount),
+          cell(r.balance_after),
+          cell(r.comment || ''),
         ].join(';'),
       );
     }
     res.setHeader('Content-Type', 'text/csv; charset=utf-8');
     res.setHeader('Content-Disposition', 'attachment; filename="transactions.csv"');
-    res.send('\uFEFF' + lines.join('\n'));
+    res.send(`\uFEFF${lines.join('\n')}`);
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Ошибка экспорта' });

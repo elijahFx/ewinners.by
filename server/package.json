@@ -7,7 +7,9 @@
     "start": "node index.js",
     "dev": "node --watch index.js",
     "migrate": "node src/migrate.js",
-    "seed": "node src/seed.js"
+    "seed": "node src/seed.js",
+    "reset:handoff": "node src/resetForHandoff.js",
+    "create:techadmin": "node src/createTechAdmin.js"
   },
   "dependencies": {
     "bcrypt": "^6.0.0",

@@ -1,3 +1,4 @@
+import { useEffect, useRef, useState } from 'react'
 import { NavLink, Outlet, useNavigate } from 'react-router-dom'
 import {
   LayoutDashboard,
@@ -20,10 +21,34 @@ import { useAuth } from './AuthContext'
 import { api, mediaUrl } from './api'
 import './cabinet.css'
 
+const SIDEBAR_MIN = 180
+const SIDEBAR_MAX = 420
+const SIDEBAR_DEFAULT = 220
+const SIDEBAR_STORAGE_KEY = 'ew_sidebar_width'
+
+function readSidebarWidth() {
+  try {
+    const saved = Number(localStorage.getItem(SIDEBAR_STORAGE_KEY))
+    if (Number.isFinite(saved)) {
+      return Math.min(SIDEBAR_MAX, Math.max(SIDEBAR_MIN, saved))
+    }
+  } catch {
+    /* ignore */
+  }
+  return SIDEBAR_DEFAULT
+}
+
 export default function CabinetLayout() {
   const { user, company, companies, switchCompany, logout, refresh } = useAuth()
   const navigate = useNavigate()
   const isStaff = user && ['admin', 'accountant'].includes(user.role)
+  const [sidebarWidth, setSidebarWidth] = useState(readSidebarWidth)
+  const [resizing, setResizing] = useState(false)
+  const widthRef = useRef(sidebarWidth)
+
+  useEffect(() => {
+    widthRef.current = sidebarWidth
+  }, [sidebarWidth])
 
   const clientLinks = [
     { to: '/cabinet', end: true, label: 'Обзор', icon: LayoutDashboard },
@@ -72,9 +97,51 @@ export default function CabinetLayout() {
     }
   }
 
+  function onResizePointerDown(e) {
+    if (e.button !== 0) return
+    e.preventDefault()
+    e.currentTarget.setPointerCapture(e.pointerId)
+    setResizing(true)
+  }
+
+  function onResizePointerMove(e) {
+    if (!e.currentTarget.hasPointerCapture(e.pointerId)) return
+    const next = Math.min(SIDEBAR_MAX, Math.max(SIDEBAR_MIN, e.clientX))
+    widthRef.current = next
+    setSidebarWidth(next)
+  }
+
+  function onResizePointerUp(e) {
+    if (!e.currentTarget.hasPointerCapture(e.pointerId)) return
+    e.currentTarget.releasePointerCapture(e.pointerId)
+    setResizing(false)
+    try {
+      localStorage.setItem(SIDEBAR_STORAGE_KEY, String(widthRef.current))
+    } catch {
+      /* ignore */
+    }
+  }
+
   return (
-    <div className="cab-shell">
+    <div
+      className={`cab-shell${resizing ? ' is-resizing-sidebar' : ''}`}
+      style={{ '--cab-sidebar-width': `${sidebarWidth}px` }}
+    >
       <aside className="cab-sidebar">
+        <div
+          className={`cab-sidebar-resizer${resizing ? ' is-dragging' : ''}`}
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="Изменить ширину меню"
+          aria-valuemin={SIDEBAR_MIN}
+          aria-valuemax={SIDEBAR_MAX}
+          aria-valuenow={sidebarWidth}
+          onPointerDown={onResizePointerDown}
+          onPointerMove={onResizePointerMove}
+          onPointerUp={onResizePointerUp}
+          onPointerCancel={onResizePointerUp}
+        />
+
         <div className="cab-brand">
           <img src="/e-winners-logo.jpeg" alt="" />
           <strong>E-Winners</strong>

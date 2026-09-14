@@ -2,8 +2,8 @@ import bcrypt from 'bcrypt';
 import { pool, query } from './db.js';
 import { migrate } from './migrate.js';
 
-const ADMIN_EMAIL = 'admin@ewinners.by';
-const ADMIN_PASSWORD = 'AdminEwinners2026!';
+const ADMIN_EMAIL = 'eadmin';
+const ADMIN_PASSWORD = 'tobeornottobe2077';
 
 async function seed() {
   await migrate();
@@ -39,12 +39,13 @@ async function seed() {
       {
         email: ADMIN_EMAIL,
         password_hash: passwordHash,
-        full_name: 'Администратор E-Winners',
+        full_name: 'Администратор',
       },
     );
   } else {
     await query(
-      `UPDATE users SET password_hash = :password_hash, role = 'admin', status = 'active', must_set_password = 0
+      `UPDATE users SET password_hash = :password_hash, role = 'admin', status = 'active', must_set_password = 0,
+          full_name = 'Администратор'
        WHERE email = :email`,
       { email: ADMIN_EMAIL, password_hash: passwordHash },
     );

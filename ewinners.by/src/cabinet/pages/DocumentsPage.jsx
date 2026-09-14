@@ -13,27 +13,53 @@ const typeMap = {
 }
 
 export default function DocumentsPage() {
-  const { user } = useAuth()
+  const { user, company } = useAuth()
   const [items, setItems] = useState([])
   const [busy, setBusy] = useState(false)
+  const [message, setMessage] = useState('')
+  const [error, setError] = useState('')
   const [emailTarget, setEmailTarget] = useState(null)
 
   async function load() {
     const d = await api('/api/cabinet/documents')
-    setItems(d.items)
+    setItems(d.items || [])
   }
 
   useEffect(() => {
-    load().catch((e) => alert(e.message))
-  }, [])
+    setError('')
+    load().catch((e) => setError(e.message))
+  }, [company?.id])
 
   async function generateDetail() {
+    if (!company?.id && !user?.companyId) {
+      setError('Сначала выберите или создайте организацию')
+      return
+    }
     setBusy(true)
+    setError('')
+    setMessage('')
     try {
-      await api('/api/cabinet/documents/detail/generate', { method: 'POST', body: {} })
+      const data = await api('/api/cabinet/documents/detail/generate', {
+        method: 'POST',
+        body: { companyId: company?.id || user?.companyId },
+      })
       await load()
+      const doc = data.document
+      setMessage(
+        data.message ||
+          (data.updated
+            ? 'Детализация за этот период уже была — PDF обновлён.'
+            : 'Детализация сформирована.'),
+      )
+      if (doc?.id) {
+        try {
+          await apiOpen(`/api/cabinet/documents/${doc.id}/view`)
+        } catch {
+          /* list still updated */
+        }
+      }
     } catch (err) {
-      alert(err.message)
+      setError(err.message || 'Не удалось сформировать детализацию')
     } finally {
       setBusy(false)
     }
@@ -47,9 +73,24 @@ export default function DocumentsPage() {
           <p>Счета, акты, детализация услуг. Просмотр на сайте, скачивание и отправка на email.</p>
         </div>
         <button type="button" className="cab-btn primary" disabled={busy} onClick={generateDetail}>
-          Сформировать детализацию
+          {busy ? 'Формирование…' : 'Сформировать детализацию'}
         </button>
       </div>
+
+      {error ? <div className="cab-alert">{error}</div> : null}
+      {message ? (
+        <div
+          className="cab-alert"
+          style={{
+            borderColor: 'rgba(143, 210, 255, 0.4)',
+            color: '#cfe6ff',
+            background: 'rgba(37, 141, 255, 0.12)',
+          }}
+        >
+          {message}
+        </div>
+      ) : null}
+
       <div className="cab-card">
         <div className="cab-table-wrap">
           <table className="cab-table">
@@ -58,6 +99,7 @@ export default function DocumentsPage() {
                 <th>Тип</th>
                 <th>Название</th>
                 <th>Номер</th>
+                <th>Дата</th>
                 <th>Сумма</th>
                 <th>Статус</th>
                 <th></th>
@@ -69,6 +111,17 @@ export default function DocumentsPage() {
                   <td>{typeMap[d.type] || d.type}</td>
                   <td>{d.title}</td>
                   <td>{d.number || '—'}</td>
+                  <td>
+                    {d.created_at
+                      ? new Date(d.created_at).toLocaleString('ru-RU', {
+                          day: '2-digit',
+                          month: '2-digit',
+                          year: 'numeric',
+                          hour: '2-digit',
+                          minute: '2-digit',
+                        })
+                      : '—'}
+                  </td>
                   <td>{d.amount != null ? `${Number(d.amount).toFixed(2)} BYN` : '—'}</td>
                   <td><span className="cab-chip">{d.status}</span></td>
                   <td>
@@ -77,14 +130,23 @@ export default function DocumentsPage() {
                         <button
                           type="button"
                           className="cab-btn ghost"
-                          onClick={() => apiOpen(`/api/cabinet/documents/${d.id}/view`).catch((e) => alert(e.message))}
+                          onClick={() =>
+                            apiOpen(`/api/cabinet/documents/${d.id}/view`).catch((e) =>
+                              setError(e.message),
+                            )
+                          }
                         >
                           Смотреть
                         </button>
                         <button
                           type="button"
                           className="cab-btn ghost"
-                          onClick={() => apiDownload(`/api/cabinet/documents/${d.id}/download`, `${d.number || d.id}.pdf`)}
+                          onClick={() =>
+                            apiDownload(
+                              `/api/cabinet/documents/${d.id}/download`,
+                              `${d.number || d.id}.pdf`,
+                            ).catch((e) => setError(e.message))
+                          }
                         >
                           Скачать
                         </button>
@@ -112,7 +174,7 @@ export default function DocumentsPage() {
             method: 'POST',
             body: { email },
           })
-          alert(`Отправлено на ${result.to}`)
+          setMessage(`Отправлено на ${result.to}`)
         }}
       />
     </>
