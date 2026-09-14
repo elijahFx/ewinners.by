@@ -41,10 +41,10 @@ export function AuthProvider({ children }) {
     return data.user
   }
 
-  async function login(email, password) {
+  async function login(login, password) {
     const data = await api('/api/auth/login', {
       method: 'POST',
-      body: { email, password },
+      body: { login, password },
     })
     if (data.requires2fa) {
       return data

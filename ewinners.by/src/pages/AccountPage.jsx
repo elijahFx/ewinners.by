@@ -8,7 +8,7 @@ import { CHALLENGE_KEY } from './TwoFaPage'
 export default function AccountPage() {
   const { login, user, loading } = useAuth()
   const navigate = useNavigate()
-  const [email, setEmail] = useState('')
+  const [loginId, setLoginId] = useState('')
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
@@ -31,7 +31,7 @@ export default function AccountPage() {
     setBusy(true)
     setError('')
     try {
-      const result = await login(email, password)
+      const result = await login(loginId, password)
       if (result?.requires2fa) {
         sessionStorage.setItem(CHALLENGE_KEY, result.challengeId)
         navigate('/account/2fa', { replace: true })
@@ -94,15 +94,17 @@ export default function AccountPage() {
               style={{ marginTop: 24, position: 'relative', zIndex: 2 }}
             >
               <label>
-                Email
+                Логин или email
                 <input
-                  type="email"
-                  name="email"
-                  placeholder="you@company.by"
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
+                  type="text"
+                  name="username"
+                  placeholder="email или логин"
+                  value={loginId}
+                  onChange={(e) => setLoginId(e.target.value)}
                   required
                   autoComplete="username"
+                  autoCapitalize="none"
+                  spellCheck={false}
                 />
               </label>
               <label>

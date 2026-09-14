@@ -52,19 +52,21 @@ async function issueSession(user, auditAction = 'login') {
 
 router.post('/login', async (req, res) => {
   try {
-    const email = String(req.body.email || '').trim().toLowerCase();
+    const login = String(req.body.login || req.body.email || '').trim().toLowerCase();
     const password = String(req.body.password || '');
-    if (!email || !password) return res.status(400).json({ error: 'Укажите email и пароль' });
+    if (!login || !password) {
+      return res.status(400).json({ error: 'Укажите логин (или email) и пароль' });
+    }
 
     const users = await query(
       `SELECT id, email, phone, full_name, avatar_url, role, company_id, status, password_hash, token_version,
               must_set_password, notify_email, notify_telegram, telegram_chat_id
-       FROM users WHERE email = :email LIMIT 1`,
-      { email },
+       FROM users WHERE email = :login LIMIT 1`,
+      { login },
     );
     const user = users[0];
     if (!user || user.status === 'blocked') {
-      return res.status(401).json({ error: 'Неверный email или пароль' });
+      return res.status(401).json({ error: 'Неверный логин или пароль' });
     }
     if (user.status === 'invited') {
       return res.status(403).json({
@@ -73,7 +75,7 @@ router.post('/login', async (req, res) => {
     }
 
     const ok = await bcrypt.compare(password, user.password_hash);
-    if (!ok) return res.status(401).json({ error: 'Неверный email или пароль' });
+    if (!ok) return res.status(401).json({ error: 'Неверный логин или пароль' });
 
     if (isAdminTwoFaRole(user.role) && telegramBotConfigured() && user.telegram_chat_id) {
       try {
@@ -84,7 +86,7 @@ router.post('/login', async (req, res) => {
           email: user.email,
           ttlMinutes,
         });
-        await audit(user.id, 'login_2fa_sent', 'user', user.id, { email });
+        await audit(user.id, 'login_2fa_sent', 'user', user.id, { email: user.email, login });
         return res.json({
           requires2fa: true,
           challengeId,
