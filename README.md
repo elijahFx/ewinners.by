@@ -45,17 +45,12 @@ npm start
 
 Админ по умолчанию после seed / reset:
 
-- логин: `eadmin`
-- пароль: `tobeornottobe2077`
 
 Технический админ:
 
 ```bash
 npm run create:techadmin
 ```
-
-- логин: `techadmin`
-- пароль: `tobeornottobe2001`
 
 ---
 
