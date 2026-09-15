@@ -4,10 +4,10 @@ export default function Footer({ contactHref = '#contact', tagline }) {
   return (
     <footer className="footer">
       <div className="footer-brand">
-        <Link className="logo" to="/" aria-label="E-Winners">
+        <a className="logo" href="https://ewinners.by/" aria-label="E-Winners">
           <img className="logo-image" src="/e-winners-logo.jpeg" alt="" />
           <span className="nowrap">E-Winners</span>
-        </Link>
+        </a>
         <p>{tagline}</p>
       </div>
 

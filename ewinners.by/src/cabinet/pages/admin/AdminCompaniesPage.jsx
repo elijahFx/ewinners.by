@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { api } from '../../api'
+import { statusLabel } from '../../statusLabels'
 
 const empty = {
   name: '',
@@ -247,7 +248,7 @@ export default function AdminCompaniesPage() {
                     <td>{Number(c.balance).toFixed(2)}</td>
                     <td>{Number(c.credit_limit).toFixed(2)}</td>
                     <td>
-                      <span className="cab-chip">{c.status}</span>
+                      <span className="cab-chip">{statusLabel(c.status)}</span>
                     </td>
                   </tr>
                 ))}

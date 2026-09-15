@@ -33,7 +33,17 @@ export default function OperationsPage() {
           <p>История поступлений и списаний по тарифам и CRM-действиям.</p>
         </div>
         <div className="cab-actions">
-          <select value={type} onChange={(e) => setType(e.target.value)} style={{ minHeight: 42, borderRadius: 999, padding: '0 14px', background: 'rgba(255,255,255,.06)', color: '#edf7ff', border: '1px solid rgba(154,211,255,.2)' }}>
+          <select
+            className="cab-select"
+            value={type}
+            onChange={(e) => setType(e.target.value)}
+            style={{
+              minHeight: 42,
+              borderRadius: 12,
+              padding: '0 14px',
+              minWidth: 180,
+            }}
+          >
             <option value="">Все операции</option>
             <option value="debit">Списания</option>
             <option value="credit">Пополнения</option>

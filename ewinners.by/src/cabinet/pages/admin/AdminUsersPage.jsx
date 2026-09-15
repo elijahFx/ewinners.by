@@ -368,15 +368,15 @@ export default function AdminUsersPage() {
   }
 
   const roleOptions = [
-    { value: 'client', label: 'client' },
-    { value: 'manager', label: 'manager' },
-    { value: 'accountant', label: 'accountant' },
-    { value: 'admin', label: 'admin' },
+    { value: 'client', label: 'Клиент' },
+    { value: 'manager', label: 'Менеджер' },
+    { value: 'accountant', label: 'Бухгалтер' },
+    { value: 'admin', label: 'Админ' },
   ]
   const statusOptions = [
-    { value: 'active', label: 'active' },
-    { value: 'blocked', label: 'blocked' },
-    { value: 'invited', label: 'invited' },
+    { value: 'active', label: 'Активен' },
+    { value: 'blocked', label: 'Заблокирован' },
+    { value: 'invited', label: 'Приглашён' },
   ]
   const companyOptions = [
     { value: '', label: 'Без организации' },

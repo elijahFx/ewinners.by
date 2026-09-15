@@ -2,19 +2,10 @@ import { useEffect, useState } from 'react'
 import { api, apiDownload, apiOpen } from '../api'
 import { useAuth } from '../AuthContext'
 import EmailSendModal from '../EmailSendModal'
+import { statusLabel } from '../statusLabels'
 
 function money(v) {
   return `${Number(v || 0).toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} BYN`
-}
-
-const statusMap = {
-  created: 'Создан',
-  awaiting_payment: 'Ожидает оплаты',
-  partially_paid: 'Частично оплачен',
-  paid: 'Оплачен',
-  overdue: 'Просрочен',
-  cancelled: 'Отменён',
-  needs_review: 'Требует проверки',
 }
 
 export default function InvoicesPage() {
@@ -94,7 +85,7 @@ export default function InvoicesPage() {
                     <td>{i.number}</td>
                     <td>{new Date(i.created_at).toLocaleString('ru-RU')}</td>
                     <td>{money(i.amount)}</td>
-                    <td><span className="cab-chip">{statusMap[i.status] || i.status}</span></td>
+                    <td><span className="cab-chip">{statusLabel(i.status)}</span></td>
                     <td>
                       <div className="cab-actions">
                         <button

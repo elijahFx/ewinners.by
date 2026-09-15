@@ -20,14 +20,17 @@ import TariffsPage from './cabinet/pages/TariffsPage'
 import CompanyPage from './cabinet/pages/CompanyPage'
 import NotificationsPage from './cabinet/pages/NotificationsPage'
 import CrmIntegrationPage from './cabinet/pages/CrmIntegrationPage'
+import ChatPage from './cabinet/pages/ChatPage'
 import AdminOverviewPage from './cabinet/pages/admin/AdminOverviewPage'
 import AdminCompaniesPage from './cabinet/pages/admin/AdminCompaniesPage'
 import AdminUsersPage from './cabinet/pages/admin/AdminUsersPage'
 import AdminProjectsPage from './cabinet/pages/admin/AdminProjectsPage'
 import AdminBankingPage from './cabinet/pages/admin/AdminBankingPage'
 import AdminInvoicesPage from './cabinet/pages/admin/AdminInvoicesPage'
+import AdminDocumentsPage from './cabinet/pages/admin/AdminDocumentsPage'
 import AdminBalancePage from './cabinet/pages/admin/AdminBalancePage'
 import AdminApiKeysPage from './cabinet/pages/admin/AdminApiKeysPage'
+import AdminTariffsPage from './cabinet/pages/admin/AdminTariffsPage'
 
 export default function App() {
   return (
@@ -125,12 +128,28 @@ export default function App() {
               </ProtectedRoute>
             }
           />
+          <Route
+            path="chat"
+            element={
+              <ProtectedRoute roles={['client', 'admin', 'accountant']}>
+                <ChatPage />
+              </ProtectedRoute>
+            }
+          />
 
           <Route
             path="admin"
             element={
               <ProtectedRoute roles={['admin', 'accountant']}>
                 <AdminOverviewPage />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="admin/chat"
+            element={
+              <ProtectedRoute roles={['admin', 'accountant']}>
+                <ChatPage />
               </ProtectedRoute>
             }
           />
@@ -174,6 +193,14 @@ export default function App() {
               </ProtectedRoute>
             }
           />
+          <Route
+            path="admin/documents"
+            element={
+              <ProtectedRoute roles={['admin', 'accountant']}>
+                <AdminDocumentsPage />
+              </ProtectedRoute>
+            }
+          />
           <Route path="admin/payments" element={<Navigate to="/cabinet/admin/banking" replace />} />
           <Route
             path="admin/balance"
@@ -188,6 +215,14 @@ export default function App() {
             element={
               <ProtectedRoute roles={['admin', 'accountant']}>
                 <AdminApiKeysPage />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="admin/tariffs"
+            element={
+              <ProtectedRoute roles={['admin']}>
+                <AdminTariffsPage />
               </ProtectedRoute>
             }
           />

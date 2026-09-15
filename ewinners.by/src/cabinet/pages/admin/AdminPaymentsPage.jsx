@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { api } from '../../api'
+import { statusLabel } from '../../statusLabels'
 
 const emptyForm = {
   amount: '',
@@ -220,7 +221,7 @@ export default function AdminPaymentsPage() {
                     <td>{p.payer_unp || '—'}</td>
                     <td>{p.company_name || '—'}</td>
                     <td>{p.invoice_number || '—'}</td>
-                    <td><span className="cab-chip">{p.status}</span></td>
+                    <td><span className="cab-chip">{statusLabel(p.status)}</span></td>
                     <td>
                       {p.status !== 'credited' && (
                         <button type="button" className="cab-btn primary" onClick={() => credit(p.id)}>

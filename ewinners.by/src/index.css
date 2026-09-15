@@ -18,8 +18,10 @@ img { max-width: 100%; }
 .home-shell .header .account-button { color: rgb(234, 244, 255); border-color: rgba(154, 211, 255, 0.24); background: rgba(255, 255, 255, 0.07); }
 .home-shell .header .account-button:hover { border-color: rgba(131, 200, 255, 0.7); background: rgba(255, 255, 255, 0.13); }
 .home-shell .header .primary-button { color: var(--white); background: linear-gradient(135deg, rgb(37, 141, 255), rgb(18, 103, 221)); box-shadow: rgba(255, 255, 255, 0.16) 0px 0px 0px 1px, rgba(47, 155, 255, 0.34) 0px 12px 32px; }
-.logo { display: inline-flex; align-items: center; gap: 10px; min-width: max-content; font-weight: 800; color: var(--primary); }
-.logo-image { width: 42px; height: 42px; border-radius: 50%; object-fit: cover; box-shadow: rgba(8, 3, 49, 0.16) 0px 8px 18px; }
+.logo { display: inline-flex; align-items: center; gap: 10px; min-width: max-content; font-weight: 800; color: var(--primary); transition: transform 0.18s ease; }
+.logo:hover { transform: scale(1.06); }
+.logo-image { width: 42px; height: 42px; border-radius: 50%; object-fit: cover; box-shadow: rgba(8, 3, 49, 0.16) 0px 8px 18px; transition: transform 0.18s ease; }
+.logo:hover .logo-image { transform: scale(1.08); }
 .nav { display: flex; align-items: center; gap: 16px; color: rgb(51, 55, 70); font-size: 0.9rem; }
 .nav a, .nav-dropdown-button { transition: color 0.18s; }
 .nav a:hover, .nav-dropdown-button:hover { color: var(--blue); }

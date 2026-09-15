@@ -35,7 +35,7 @@ function canMarkPaid(status) {
 }
 
 const fieldClass =
-  'mt-1.5 h-10 w-full rounded-lg border border-transparent bg-white/[0.06] px-3 text-sm font-medium text-[#f3f8ff] outline-none focus:bg-white/[0.09] focus:ring-2 focus:ring-[#4ea8ff]/35'
+  'cab-select mt-1.5 h-10 w-full rounded-lg border border-[#2a5f8f] bg-[#0c2344] px-3 text-sm font-medium text-[#f3f8ff] outline-none focus:ring-2 focus:ring-[#4ea8ff]/35'
 
 export default function AdminInvoicesPage() {
   const [items, setItems] = useState([])

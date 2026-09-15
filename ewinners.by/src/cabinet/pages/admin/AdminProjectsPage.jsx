@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { api } from '../../api'
+import { statusLabel } from '../../statusLabels'
 
 export default function AdminProjectsPage() {
   const [items, setItems] = useState([])
@@ -77,7 +78,7 @@ export default function AdminProjectsPage() {
                     <td>{p.id}</td>
                     <td>{p.name}</td>
                     <td>{p.company_name}</td>
-                    <td><span className="cab-chip">{p.status}</span></td>
+                    <td><span className="cab-chip">{statusLabel(p.status)}</span></td>
                   </tr>
                 ))}
               </tbody>

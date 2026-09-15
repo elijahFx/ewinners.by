@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Copy, KeyRound, RefreshCw } from 'lucide-react'
 import { api } from '../../api'
+import { statusLabel } from '../../statusLabels'
 
 export default function AdminApiKeysPage() {
   const [items, setItems] = useState([])
@@ -73,7 +74,7 @@ export default function AdminApiKeysPage() {
                   <div className="font-semibold text-white">{row.name}</div>
                   {row.unp ? <div className="text-xs text-[#9db8d4]">УНП {row.unp}</div> : null}
                 </td>
-                <td className="px-3 py-3 text-[#cfe6ff]">{row.status}</td>
+                <td className="px-3 py-3 text-[#cfe6ff]">{statusLabel(row.status)}</td>
                 <td className="px-3 py-3">
                   {row.apiKey ? (
                     <div className="flex max-w-md items-center gap-2">

@@ -16,10 +16,10 @@ export default function Header({ contactHref = '#contact' }) {
 
   return (
     <header className="header">
-      <Link className="logo" to="/" aria-label="E-Winners" onClick={() => setOpen(false)}>
+      <a className="logo" href="https://ewinners.by/" aria-label="E-Winners" onClick={() => setOpen(false)}>
         <img className="logo-image" src="/e-winners-logo.jpeg" alt="" />
         <span className="nowrap">E-Winners</span>
-      </Link>
+      </a>
 
       <nav className={`nav${open ? ' is-open' : ''}`} aria-label="Основная навигация">
         <Link to="/call-center" onClick={() => setOpen(false)}>

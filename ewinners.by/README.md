@@ -4,8 +4,8 @@
 
 ```
 ewinners.by/
-  ewinners.by/       # фронтенд (Vite/React) → Netlify
-  server_ewinners/   # бэкенд (Express/MySQL) → хостинг
+  ewinners.by/   # фронтенд (Vite/React)
+  server/        # бэкенд (Express/MySQL + Socket.io)
 ```
 
 ## Frontend
@@ -16,7 +16,7 @@ npm install
 npm run dev
 ```
 
-Сборка для Netlify: `npm run build` (publish = `dist`).  
+Сборка: `npm run build` (publish = `dist`).  
 SPA-редиректы: `public/_redirects` и `netlify.toml`.
 
 API: `VITE_API_URL` (сейчас `https://test.zkh.by`).
@@ -24,7 +24,7 @@ API: `VITE_API_URL` (сейчас `https://test.zkh.by`).
 ## Backend
 
 ```bash
-cd server_ewinners
+cd server
 npm install
 npm run migrate
 npm run seed
@@ -32,3 +32,10 @@ npm start
 ```
 
 Startup file на хостинге: `index.js`.
+
+### Чат
+
+- Клиент: `/cabinet/chat` — переписка с поддержкой
+- Админ/бухгалтер: `/cabinet/admin/chat` — все чаты клиентов
+- Realtime: Socket.io (`/socket.io`), вложения в `/uploads/chat`
+- На Plesk/Passenger включите поддержку WebSocket (иначе останется long-polling)

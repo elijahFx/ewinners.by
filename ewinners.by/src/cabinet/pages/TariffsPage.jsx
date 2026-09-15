@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { api } from '../api'
+import { statusLabel } from '../statusLabels'
 
 export default function TariffsPage() {
   const [items, setItems] = useState([])
@@ -36,8 +37,10 @@ export default function TariffsPage() {
                 <tr key={t.id}>
                   <td>{t.service_name}</td>
                   <td>{t.project_name || 'Все проекты'}</td>
-                  <td>{t.billing_type}</td>
-                  <td>{Number(t.price).toFixed(2)} BYN / {t.unit}</td>
+                  <td>{statusLabel(t.billing_type)}</td>
+                  <td>
+                    {Number(t.price).toFixed(2)} BYN / {t.unit}
+                  </td>
                   <td>{t.valid_from}</td>
                   <td>{t.company_id ? 'Индивидуальный' : 'Базовый'}</td>
                 </tr>

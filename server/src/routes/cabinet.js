@@ -310,10 +310,21 @@ router.get('/documents', async (req, res) => {
   try {
     const companyId = companyScope(req);
     if (!companyId) return res.status(400).json({ error: 'Компания не назначена' });
-    const rows = await query(
-      `SELECT * FROM documents WHERE company_id = :company_id ORDER BY created_at DESC`,
-      { company_id: companyId },
-    );
+
+    const params = { company_id: companyId };
+    let sql = `SELECT * FROM documents WHERE company_id = :company_id`;
+
+    if (req.query.from) {
+      sql += ' AND DATE(created_at) >= :from';
+      params.from = String(req.query.from).slice(0, 10);
+    }
+    if (req.query.to) {
+      sql += ' AND DATE(created_at) <= :to';
+      params.to = String(req.query.to).slice(0, 10);
+    }
+
+    sql += ' ORDER BY created_at DESC';
+    const rows = await query(sql, params);
     res.json({ items: rows });
   } catch (err) {
     console.error(err);

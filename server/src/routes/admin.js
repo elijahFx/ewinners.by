@@ -2,6 +2,7 @@ import { Router } from 'express';
 import bcrypt from 'bcrypt';
 import dayjs from 'dayjs';
 import fs from 'fs';
+import path from 'path';
 import { query, withTransaction } from '../db.js';
 import { authRequired, requireRoles } from '../middleware/auth.js';
 import {
@@ -1198,6 +1199,100 @@ router.post('/payments/:id/credit', requireRoles('admin', 'accountant'), async (
   } catch (err) {
     console.error(err);
     res.status(400).json({ error: err.message || 'Ошибка зачисления' });
+  }
+});
+
+router.get('/documents', async (req, res) => {
+  try {
+    const params = {};
+    let sql = `SELECT d.*, c.name AS company_name, c.unp AS company_unp
+               FROM documents d
+               JOIN companies c ON c.id = d.company_id
+               WHERE 1=1`;
+
+    if (req.query.companyId) {
+      sql += ' AND d.company_id = :company_id';
+      params.company_id = Number(req.query.companyId);
+    }
+    if (req.query.type) {
+      sql += ' AND d.type = :type';
+      params.type = String(req.query.type);
+    }
+    if (req.query.status) {
+      sql += ' AND d.status = :status';
+      params.status = String(req.query.status);
+    }
+    const q = String(req.query.q || '').trim();
+    if (q) {
+      sql += ` AND (
+        d.title LIKE :q OR d.number LIKE :q OR c.name LIKE :q OR c.unp LIKE :q
+      )`;
+      params.q = `%${q}%`;
+    }
+    if (req.query.from) {
+      sql += ' AND DATE(d.created_at) >= :from_date';
+      params.from_date = String(req.query.from).slice(0, 10);
+    }
+    if (req.query.to) {
+      sql += ' AND DATE(d.created_at) <= :to_date';
+      params.to_date = String(req.query.to).slice(0, 10);
+    }
+
+    sql += ' ORDER BY d.created_at DESC LIMIT 2000';
+    const rows = await query(sql, params);
+    res.json({ items: rows });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Не удалось загрузить документы' });
+  }
+});
+
+async function loadAdminDocument(id) {
+  const rows = await query(
+    `SELECT d.*, c.name AS company_name
+     FROM documents d
+     JOIN companies c ON c.id = d.company_id
+     WHERE d.id = :id
+     LIMIT 1`,
+    { id: Number(id) },
+  );
+  const doc = rows[0];
+  if (!doc) {
+    const err = new Error('Документ не найден');
+    err.status = 404;
+    throw err;
+  }
+  if (!doc.file_path || !fs.existsSync(doc.file_path)) {
+    const err = new Error('Файл не найден');
+    err.status = 404;
+    throw err;
+  }
+  return doc;
+}
+
+router.get('/documents/:id/view', async (req, res) => {
+  try {
+    const doc = await loadAdminDocument(req.params.id);
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader(
+      'Content-Disposition',
+      `inline; filename="${path.basename(doc.file_path)}"`,
+    );
+    fs.createReadStream(doc.file_path).pipe(res);
+  } catch (err) {
+    console.error(err);
+    res.status(err.status || 500).json({ error: err.message || 'Ошибка просмотра' });
+  }
+});
+
+router.get('/documents/:id/download', async (req, res) => {
+  try {
+    const doc = await loadAdminDocument(req.params.id);
+    await query('UPDATE documents SET downloaded_at = NOW() WHERE id = :id', { id: doc.id });
+    res.download(doc.file_path, path.basename(doc.file_path));
+  } catch (err) {
+    console.error(err);
+    res.status(err.status || 500).json({ error: err.message || 'Ошибка скачивания' });
   }
 });
 

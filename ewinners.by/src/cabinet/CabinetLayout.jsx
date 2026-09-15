@@ -1,5 +1,6 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { NavLink, Outlet, useNavigate } from 'react-router-dom'
+import { io } from 'socket.io-client'
 import {
   LayoutDashboard,
   Receipt,
@@ -16,6 +17,8 @@ import {
   KeyRound,
   ShieldCheck,
   Landmark,
+  MessageCircle,
+  Tags,
 } from 'lucide-react'
 import { useAuth } from './AuthContext'
 import { api, mediaUrl } from './api'
@@ -44,11 +47,50 @@ export default function CabinetLayout() {
   const isStaff = user && ['admin', 'accountant'].includes(user.role)
   const [sidebarWidth, setSidebarWidth] = useState(readSidebarWidth)
   const [resizing, setResizing] = useState(false)
+  const [chatPending, setChatPending] = useState(0)
   const widthRef = useRef(sidebarWidth)
 
   useEffect(() => {
     widthRef.current = sidebarWidth
   }, [sidebarWidth])
+
+  const refreshChatPending = useCallback(async () => {
+    if (!user) {
+      setChatPending(0)
+      return
+    }
+    try {
+      const data = await api('/api/chat/unread-count')
+      setChatPending(Number(data.count) || 0)
+    } catch {
+      setChatPending(0)
+    }
+  }, [user])
+
+  useEffect(() => {
+    refreshChatPending()
+    const onRefresh = () => refreshChatPending()
+    window.addEventListener('ew-chat-unread-refresh', onRefresh)
+    const timer = setInterval(refreshChatPending, 30000)
+    return () => {
+      window.removeEventListener('ew-chat-unread-refresh', onRefresh)
+      clearInterval(timer)
+    }
+  }, [refreshChatPending])
+
+  useEffect(() => {
+    const token = localStorage.getItem('ew_token')
+    if (!token || !user) return undefined
+    const API_BASE = (import.meta.env.VITE_API_URL || 'https://test.zkh.by').replace(/\/$/, '')
+    const socket = io(API_BASE, {
+      path: '/socket.io',
+      transports: ['websocket', 'polling'],
+      auth: { token },
+    })
+    socket.on('chat:unread-changed', refreshChatPending)
+    socket.on('chat:conversation-updated', refreshChatPending)
+    return () => socket.disconnect()
+  }, [user, refreshChatPending])
 
   const clientLinks = [
     { to: '/cabinet', end: true, label: 'Обзор', icon: LayoutDashboard },
@@ -58,17 +100,21 @@ export default function CabinetLayout() {
     { to: '/cabinet/tariffs', label: 'Тарифы', icon: Wallet },
     { to: '/cabinet/company', label: 'Организации', icon: Building2 },
     { to: '/cabinet/notifications', label: 'Уведомления', icon: Bell },
+    { to: '/cabinet/chat', label: 'Чат', icon: MessageCircle },
     { to: '/cabinet/crm', label: 'Интеграция CRM', icon: Cable },
   ]
 
   const adminLinks = [
     { to: '/cabinet/admin', end: true, label: 'Админ-обзор', icon: Shield },
+    { to: '/cabinet/admin/chat', label: 'Чат', icon: MessageCircle },
     { to: '/cabinet/admin/companies', label: 'Клиенты', icon: Building2 },
     { to: '/cabinet/admin/users', label: 'Пользователи', icon: Users },
     { to: '/cabinet/admin/projects', label: 'Проекты', icon: FolderKanban },
     { to: '/cabinet/admin/invoices', label: 'Счета', icon: Receipt },
+    { to: '/cabinet/admin/documents', label: 'Документы', icon: FileText },
     { to: '/cabinet/admin/banking', label: 'Банкинг', icon: Landmark },
     { to: '/cabinet/admin/balance', label: 'Корректировки', icon: Wallet },
+    { to: '/cabinet/admin/tariffs', label: 'Тарифы', icon: Tags },
     { to: '/cabinet/admin/api-keys', label: 'API-ключи', icon: KeyRound },
     ...(user?.role === 'admin'
       ? [{ to: '/account/security', label: 'Безопасность', icon: ShieldCheck }]
@@ -142,10 +188,16 @@ export default function CabinetLayout() {
           onPointerCancel={onResizePointerUp}
         />
 
-        <div className="cab-brand">
+        <a
+          className="cab-brand"
+          href="https://ewinners.by"
+          target="_blank"
+          rel="noopener noreferrer"
+          title="ewinners.by"
+        >
           <img src="/e-winners-logo.jpeg" alt="" />
           <strong>E-Winners</strong>
-        </div>
+        </a>
 
         {!isStaff && companies?.length > 0 ? (
           <div style={{ padding: '0 14px 12px' }}>
@@ -206,11 +258,18 @@ export default function CabinetLayout() {
 
         <div className="cab-sidebar-foot">
           <label className="cab-user" title="Сменить аватар">
-            {user?.avatarUrl ? (
-              <img className="cab-user-avatar" src={mediaUrl(user.avatarUrl)} alt="" />
-            ) : (
-              <span className="cab-user-avatar">{(user?.fullName || '?').slice(0, 1)}</span>
-            )}
+            <span className="cab-user-avatar-wrap">
+              {user?.avatarUrl ? (
+                <img className="cab-user-avatar" src={mediaUrl(user.avatarUrl)} alt="" />
+              ) : (
+                <span className="cab-user-avatar">{(user?.fullName || '?').slice(0, 1)}</span>
+              )}
+              {chatPending > 0 ? (
+                <em className="cab-chat-pending-badge" title="Диалоги, требующие ответа">
+                  {chatPending > 99 ? '99+' : chatPending}
+                </em>
+              ) : null}
+            </span>
             <span className="cab-user-meta">
               <strong>{user?.fullName}</strong>
               <em>{user?.role}</em>

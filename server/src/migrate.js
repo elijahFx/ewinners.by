@@ -222,6 +222,51 @@ const statements = [
     CONSTRAINT fk_uc_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
     CONSTRAINT fk_uc_company FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE CASCADE
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+
+  `CREATE TABLE IF NOT EXISTS chat_conversations (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    kind ENUM('client','staff') NOT NULL DEFAULT 'client',
+    client_user_id INT NULL,
+    staff_a_id INT NULL,
+    staff_b_id INT NULL,
+    last_message_at DATETIME NULL,
+    last_message_preview VARCHAR(255) NULL,
+    client_unread INT NOT NULL DEFAULT 0,
+    staff_unread INT NOT NULL DEFAULT 0,
+    a_unread INT NOT NULL DEFAULT 0,
+    b_unread INT NOT NULL DEFAULT 0,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uq_chat_client (client_user_id),
+    UNIQUE KEY uq_chat_staff_pair (staff_a_id, staff_b_id),
+    KEY idx_chat_kind (kind),
+    CONSTRAINT fk_chat_conv_client FOREIGN KEY (client_user_id) REFERENCES users(id) ON DELETE CASCADE,
+    CONSTRAINT fk_chat_conv_staff_a FOREIGN KEY (staff_a_id) REFERENCES users(id) ON DELETE CASCADE,
+    CONSTRAINT fk_chat_conv_staff_b FOREIGN KEY (staff_b_id) REFERENCES users(id) ON DELETE CASCADE
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+
+  `CREATE TABLE IF NOT EXISTS chat_messages (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    conversation_id INT NOT NULL,
+    sender_id INT NOT NULL,
+    body TEXT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    KEY idx_chat_msg_conv (conversation_id, id),
+    CONSTRAINT fk_chat_msg_conv FOREIGN KEY (conversation_id) REFERENCES chat_conversations(id) ON DELETE CASCADE,
+    CONSTRAINT fk_chat_msg_sender FOREIGN KEY (sender_id) REFERENCES users(id) ON DELETE CASCADE
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+
+  `CREATE TABLE IF NOT EXISTS chat_attachments (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    message_id INT NOT NULL,
+    file_path VARCHAR(512) NOT NULL,
+    original_name VARCHAR(255) NOT NULL,
+    mime_type VARCHAR(128) NOT NULL,
+    size_bytes INT NOT NULL DEFAULT 0,
+    kind ENUM('image','video','file') NOT NULL DEFAULT 'file',
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT fk_chat_att_msg FOREIGN KEY (message_id) REFERENCES chat_messages(id) ON DELETE CASCADE
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
 ];
 
 async function ensureColumn(table, column, definition) {
@@ -274,6 +319,52 @@ export async function migrate() {
     `INSERT IGNORE INTO user_companies (user_id, company_id, is_default)
      SELECT id, company_id, 1 FROM users WHERE company_id IS NOT NULL`,
   );
+
+  // Chat schema upgrades (existing installs)
+  await ensureColumn(
+    'chat_conversations',
+    'kind',
+    "ENUM('client','staff') NOT NULL DEFAULT 'client' AFTER id",
+  );
+  await ensureColumn('chat_conversations', 'staff_a_id', 'INT NULL AFTER client_user_id');
+  await ensureColumn('chat_conversations', 'staff_b_id', 'INT NULL AFTER staff_a_id');
+  await ensureColumn('chat_conversations', 'a_unread', 'INT NOT NULL DEFAULT 0 AFTER staff_unread');
+  await ensureColumn('chat_conversations', 'b_unread', 'INT NOT NULL DEFAULT 0 AFTER a_unread');
+
+  // Allow NULL client_user_id for staff DMs
+  try {
+    await pool.execute(
+      `ALTER TABLE chat_conversations MODIFY COLUMN client_user_id INT NULL`,
+    );
+  } catch {
+    /* already nullable or table missing */
+  }
+
+  try {
+    await pool.execute(
+      `ALTER TABLE chat_conversations
+       ADD UNIQUE KEY uq_chat_staff_pair (staff_a_id, staff_b_id)`,
+    );
+  } catch {
+    /* index exists */
+  }
+
+  try {
+    await pool.execute(
+      `ALTER TABLE chat_conversations
+       ADD CONSTRAINT fk_chat_conv_staff_a FOREIGN KEY (staff_a_id) REFERENCES users(id) ON DELETE CASCADE`,
+    );
+  } catch {
+    /* exists */
+  }
+  try {
+    await pool.execute(
+      `ALTER TABLE chat_conversations
+       ADD CONSTRAINT fk_chat_conv_staff_b FOREIGN KEY (staff_b_id) REFERENCES users(id) ON DELETE CASCADE`,
+    );
+  } catch {
+    /* exists */
+  }
 }
 
 if (import.meta.url === `file://${process.argv[1]}` || process.argv[1]?.endsWith('migrate.js')) {

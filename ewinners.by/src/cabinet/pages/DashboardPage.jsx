@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { api } from '../api'
 import { useAuth } from '../AuthContext'
+import { statusLabel } from '../statusLabels'
 
 function money(v) {
   return `${Number(v || 0).toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} BYN`
@@ -88,7 +89,7 @@ export default function DashboardPage() {
         <div className="cab-card cab-kpi">
           <span>Статус обслуживания</span>
           <strong style={{ fontSize: '1.35rem' }}>
-            {c.status === 'active' ? 'Активен' : c.status === 'suspended' ? 'Приостановлен' : 'Заблокирован'}
+            {statusLabel(c.status)}
           </strong>
         </div>
 
@@ -141,7 +142,7 @@ export default function DashboardPage() {
                     <tr key={p.id}>
                       <td>{p.name}</td>
                       <td>
-                        <span className="cab-chip">{p.status}</span>
+                        <span className="cab-chip">{statusLabel(p.status)}</span>
                       </td>
                     </tr>
                   ))}

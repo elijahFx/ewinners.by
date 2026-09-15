@@ -11,6 +11,17 @@ export default defineConfig({
         changeOrigin: true,
         secure: true,
       },
+      '/socket.io': {
+        target: 'https://test.zkh.by',
+        changeOrigin: true,
+        secure: true,
+        ws: true,
+      },
+      '/uploads': {
+        target: 'https://test.zkh.by',
+        changeOrigin: true,
+        secure: true,
+      },
     },
   },
 })
