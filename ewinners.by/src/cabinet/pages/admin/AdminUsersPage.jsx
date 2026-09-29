@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { Building2, Copy, KeyRound, Plus, Trash2, X } from 'lucide-react'
 import { api, mediaUrl } from '../../api'
+import { statusLabel } from '../../statusLabels'
 
 const emptyForm = {
   email: '',
@@ -675,7 +676,7 @@ export default function AdminUsersPage() {
                     <InlineCell value={u.phone || ''} display={u.phone || '—'} onSave={(phone) => patchUser(u.id, { phone })} />
                   </td>
                   <td className={cell} style={{ width: cols.role, minWidth: cols.role }}>
-                    <InlineCell type="select" value={u.role} options={roleOptions} onSave={(role) => patchUser(u.id, { role })} />
+                    <InlineCell type="select" value={u.role} display={statusLabel(u.role)} options={roleOptions} onSave={(role) => patchUser(u.id, { role })} />
                   </td>
                   <td className={cell} style={{ width: cols.company, minWidth: cols.company }}>
                     <div className="px-1 py-1 text-sm">
@@ -688,7 +689,7 @@ export default function AdminUsersPage() {
                     </div>
                   </td>
                   <td className={cell} style={{ width: cols.status, minWidth: cols.status }}>
-                    <InlineCell type="select" value={u.status} options={statusOptions} onSave={(status) => patchUser(u.id, { status })} />
+                    <InlineCell type="select" value={u.status} display={statusLabel(u.status)} options={statusOptions} onSave={(status) => patchUser(u.id, { status })} />
                   </td>
                   <td className={`${cell} px-3 py-2`} style={{ width: cols.actions, minWidth: cols.actions }}>
                     <div className="flex items-center gap-2 whitespace-nowrap">
@@ -718,7 +719,7 @@ export default function AdminUsersPage() {
                         }}
                         className="inline-flex items-center gap-1 rounded-md border-0 bg-[#0ea5e9] px-2.5 py-1.5 text-xs font-extrabold text-white hover:bg-[#38bdf8]"
                       >
-                        Invite
+                        Пригласить
                       </button>
                       <button
                         type="button"

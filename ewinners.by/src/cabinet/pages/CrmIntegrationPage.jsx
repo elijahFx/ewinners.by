@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { Cable, Copy, KeyRound, Link2, RefreshCw, ShieldCheck } from 'lucide-react'
 import { api } from '../api'
 
-const API_BASE = (import.meta.env.VITE_API_URL || 'https://test.zkh.by').replace(/\/$/, '')
+const API_BASE = (import.meta.env.VITE_API_URL || 'https://178.172.137.114.sslip.io').replace(/\/$/, '')
 
 const SERVICES = [
   ['call_minute', 'Минута разговора', 'мин'],

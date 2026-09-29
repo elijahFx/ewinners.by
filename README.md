@@ -42,6 +42,18 @@ npm start
 | `npm run seed` | Услуги, тарифы, админ `eadmin` |
 | `npm run reset:handoff` | Очистка пользователей/клиентов + админ `eadmin` |
 | `npm run create:techadmin` | Аккаунт `techadmin` |
+| `npm run create:admin -- <логин> <пароль> [ФИО]` | Создать/обновить админа |
+
+Создание произвольного админа:
+
+```bash
+cd server
+npm run create:admin -- pavel 12345678910 "Павел"
+```
+
+Команду можно запускать повторно: у существующего логина сбросится пароль,
+подтвердится роль `admin`, а старые сессии станут недействительными
+(`token_version` увеличивается).
 
 Админ по умолчанию после seed / reset:
 
@@ -108,7 +120,11 @@ npm run create:techadmin
 
 ### 5. Банкинг
 
-Раздел **Банкинг** — поступления / списания / выписка из Priorbank API (нужна настройка env).
+Раздел **Банкинг** — поступления / списания / выписка из **MTBank Open API** (через AvTunProxy).
+
+Нужны в `server/.env`: `MTBANK_API_KEY`, `MTBANK_CONSENT_ID`, при необходимости `MTBANK_ACCOUNT_ID` / `MTBANK_ACCOUNT_IBAN`, `MTBANK_PROXY=http://127.0.0.1:10224`.
+
+PHP-cron каждые 2 минуты: `server/cron/mtbank_check_payments.php` → `/api/internal/bank/sync` — если в назначении платежа есть номер счёта (`EW-…`) и сумма совпадает, счёт помечается оплаченным.
 
 ### 6. Корректировки баланса
 
@@ -117,6 +133,9 @@ npm run create:techadmin
 ### 7. API-ключи CRM
 
 Раздел **API-ключи** — ключи компаний для интеграции CRM. Клиент также может сгенерировать ключ у себя в **Интеграция CRM**.
+
+SalesRender (списание при статусе «Вручено»): см. `server/docs/SALESRENDER.md`.  
+`POST /api/crm/salesrender/delivered` + `X-Api-Key` компании.
 
 ---
 
@@ -164,12 +183,12 @@ npm run create:techadmin
 
 - `ewinners.by/src/cabinet/` — UI кабинета
 - `server/src/routes/` — API (`auth`, `cabinet`, `admin`, `crm`, `lookup`)
-- `server/src/services/` — PDF, биллинг, Priorbank, почта, Telegram 2FA
+- `server/src/services/` — PDF, биллинг, MTBank, почта, Telegram 2FA
 
 ---
 
 ## Замечания по продакшену
 
-- Заполните `.env` сервера: БД, JWT, SMTP, реквизиты компании для счетов, при необходимости Priorbank и Telegram.
+- Заполните `.env` сервера: БД, JWT, SMTP, реквизиты компании для счетов, MTBank (`MTBANK_API_KEY` и согласие) и Telegram.
 - Шрифт с кириллицей для PDF: `server/assets/fonts/ArialUnicode.ttf` (или DejaVu).
 - После деплоя бэкенда перезапустите Node-процесс, чтобы подтянуть новые маршруты.

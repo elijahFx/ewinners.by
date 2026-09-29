@@ -29,6 +29,7 @@ import AdminBankingPage from './cabinet/pages/admin/AdminBankingPage'
 import AdminInvoicesPage from './cabinet/pages/admin/AdminInvoicesPage'
 import AdminDocumentsPage from './cabinet/pages/admin/AdminDocumentsPage'
 import AdminBalancePage from './cabinet/pages/admin/AdminBalancePage'
+import AdminWriteOffsPage from './cabinet/pages/admin/AdminWriteOffsPage'
 import AdminApiKeysPage from './cabinet/pages/admin/AdminApiKeysPage'
 import AdminTariffsPage from './cabinet/pages/admin/AdminTariffsPage'
 
@@ -215,6 +216,14 @@ export default function App() {
             element={
               <ProtectedRoute roles={['admin', 'accountant']}>
                 <AdminApiKeysPage />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="admin/write-offs"
+            element={
+              <ProtectedRoute roles={['admin', 'accountant']}>
+                <AdminWriteOffsPage />
               </ProtectedRoute>
             }
           />

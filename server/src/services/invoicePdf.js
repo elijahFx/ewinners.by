@@ -3,6 +3,7 @@ import path from 'path';
 import PDFDocument from 'pdfkit';
 import { fileURLToPath } from 'url';
 import { config } from '../db.js';
+import { drawDirectorStamp } from './pdfHelpers.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const docsDir = path.join(__dirname, '../../uploads/documents');
@@ -141,11 +142,11 @@ export async function generateInvoicePdf({ number, amount, purpose, company, cre
     doc.font('Regular').fontSize(11).fillColor('#333');
     doc.text(`Номер: ${number}`);
     doc.text(`Дата: ${createdAt}`);
-    doc.moveDown(0.8);
+    doc.moveDown(0.55);
 
     // Issuer block
-    doc.font('Bold').fontSize(12).fillColor('#0b1f3a').text('Получатель платежа');
-    doc.moveDown(0.25);
+    doc.font('Bold').fontSize(11).fillColor('#0b1f3a').text('Получатель платежа');
+    doc.moveDown(0.2);
     doc.font('Bold').fontSize(10).fillColor('#111').text(issuer.name || 'E-Winners', { width });
     doc.font('Regular').fontSize(10).fillColor('#333');
     if (issuer.activity) doc.text(issuer.activity, { width });
@@ -157,11 +158,11 @@ export async function generateInvoicePdf({ number, amount, purpose, company, cre
     else doc.text('IBAN: — (уточните у менеджера E-Winners)');
     if (issuer.bic) doc.text(`БИК: ${issuer.bic}`);
     else doc.text('БИК: —');
-    doc.moveDown(0.8);
+    doc.moveDown(0.55);
 
     // Payer
-    doc.font('Bold').fontSize(12).fillColor('#0b1f3a').text('Плательщик');
-    doc.moveDown(0.25);
+    doc.font('Bold').fontSize(11).fillColor('#0b1f3a').text('Плательщик');
+    doc.moveDown(0.2);
     doc.font('Bold').fontSize(10).fillColor('#111').text(company.name || '—', { width });
     doc.font('Regular').fontSize(10).fillColor('#333');
     if (company.entity_type === 'ip') doc.text('Форма: ИП');
@@ -170,13 +171,13 @@ export async function generateInvoicePdf({ number, amount, purpose, company, cre
     if (company.bank_name) doc.text(`Банк: ${company.bank_name}`);
     if (company.iban) doc.text(`IBAN: ${company.iban}`);
     if (company.bic) doc.text(`БИК: ${company.bic}`);
-    doc.moveDown(0.8);
+    doc.moveDown(0.55);
 
     // Purpose
-    doc.font('Bold').fontSize(12).fillColor('#0b1f3a').text('Назначение платежа');
-    doc.moveDown(0.25);
-    doc.font('Regular').fontSize(10).fillColor('#333').text(purpose || '—', { width });
-    doc.moveDown(0.6);
+    doc.font('Bold').fontSize(11).fillColor('#0b1f3a').text('Назначение платежа');
+    doc.moveDown(0.2);
+    doc.font('Regular').fontSize(9.5).fillColor('#333').text(purpose || '—', { width, lineGap: 1 });
+    doc.moveDown(0.45);
 
     // Important note — высота по тексту
     const noteY = doc.y;
@@ -184,32 +185,32 @@ export async function generateInvoicePdf({ number, amount, purpose, company, cre
       `Важно: в назначении платежа обязательно укажите номер счёта ${number}. ` +
       `Без номера счёта зачисление денежных средств не будет выполнено автоматически — ` +
       `потребуется связаться с бухгалтером по телефону ${accountantPhone}.`;
-    doc.font('Bold').fontSize(9);
+    doc.font('Bold').fontSize(8.5);
     const noteHeight = Math.max(
-      68,
-      doc.heightOfString(noteText, { width: width - 24, lineGap: 2 }) + 20,
+      52,
+      doc.heightOfString(noteText, { width: width - 24, lineGap: 1.5 }) + 16,
     );
     doc.roundedRect(left, noteY, width, noteHeight, 8).fillAndStroke('#fff7ed', '#fdba74');
     doc
       .fillColor('#9a3412')
       .font('Bold')
-      .fontSize(9)
-      .text(noteText, left + 12, noteY + 10, { width: width - 24, lineGap: 2 });
-    doc.y = noteY + noteHeight + 12;
+      .fontSize(8.5)
+      .text(noteText, left + 12, noteY + 8, { width: width - 24, lineGap: 1.5 });
+    doc.y = noteY + noteHeight + 8;
 
     // Amount
     const boxY = doc.y;
-    doc.roundedRect(left, boxY, width, 44, 8).fillAndStroke('#eff6ff', '#93c5fd');
+    doc.roundedRect(left, boxY, width, 38, 8).fillAndStroke('#eff6ff', '#93c5fd');
     doc
       .fillColor('#0b1f3a')
       .font('Bold')
-      .fontSize(13)
-      .text(`Сумма к оплате: ${money(amount)}`, left + 14, boxY + 14, { width: width - 28 });
+      .fontSize(12)
+      .text(`Сумма к оплате: ${money(amount)}`, left + 14, boxY + 11, { width: width - 28 });
 
-    doc.y = boxY + 60;
+    doc.y = boxY + 46;
     doc
       .font('Regular')
-      .fontSize(9)
+      .fontSize(8)
       .fillColor('#666')
       .text(
         'Документ сформирован автоматически в личном кабинете E-Winners. Оплата производится банковским переводом по реквизитам получателя.',
@@ -217,6 +218,9 @@ export async function generateInvoicePdf({ number, amount, purpose, company, cre
         doc.y,
         { width },
       );
+
+    doc.moveDown(0.7);
+    drawDirectorStamp(doc, { left, width, y: doc.y });
 
     doc.end();
     stream.on('finish', resolve);

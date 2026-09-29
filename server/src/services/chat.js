@@ -291,7 +291,16 @@ export async function createMessage({ conversationId, sender, body, files = [] }
      WHERE m.id = :id`,
     { id: messageId },
   );
-  return mapMessage(rows[0]);
+  const mapped = await mapMessage(rows[0]);
+
+  try {
+    const { queueChatMessageBackup } = await import('./yandexBackup.js');
+    queueChatMessageBackup(messageId);
+  } catch (err) {
+    console.warn('[yandex-disk] schedule failed:', err.message);
+  }
+
+  return mapped;
 }
 
 export async function markConversationRead(conversationId, user) {

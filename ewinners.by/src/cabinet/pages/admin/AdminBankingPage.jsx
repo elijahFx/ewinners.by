@@ -4,6 +4,7 @@ import { api, apiDownload } from '../../api'
 import Button from '../../ui/Button'
 import SearchField from '../../ui/SearchField'
 import SegmentedControl from '../../ui/SegmentedControl'
+import Skeleton from '../../ui/Skeleton'
 
 function periodDefaults() {
   const to = new Date()
@@ -24,6 +25,20 @@ function money(v, currency = 'BYN') {
 function formatDate(value) {
   if (!value) return '—'
   return new Date(value).toLocaleDateString('ru-RU')
+}
+
+// Остаток — снимок на момент ответа банка, поэтому показываем и время.
+function formatDateTime(value) {
+  if (!value) return null
+  const d = new Date(value)
+  if (Number.isNaN(d.getTime())) return null
+  return d.toLocaleString('ru-RU', {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  })
 }
 
 const tabs = [
@@ -51,22 +66,37 @@ export default function AdminBankingPage() {
   const [message, setMessage] = useState('')
   const [fetchedAt, setFetchedAt] = useState(null)
   const [loading, setLoading] = useState(true)
+  // Данные из MTBank приходят за несколько секунд, поэтому до первого ответа
+  // показываем скелетон, а не нули.
+  const [loaded, setLoaded] = useState(false)
+  const [syncing, setSyncing] = useState(false)
   const [error, setError] = useState('')
 
+  // Поиск не должен дёргать MTBank на каждое нажатие клавиши.
+  const [debouncedQ, setDebouncedQ] = useState('')
+
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedQ(filters.q.trim()), 300)
+    return () => clearTimeout(timer)
+  }, [filters.q])
+
+  // `direction` намеренно не отправляем: API отдаёт все операции за период,
+  // а вкладка фильтрует их локально — переключение вкладок мгновенное.
   const queryString = useMemo(() => {
     const p = new URLSearchParams()
     if (filters.from) p.set('from', filters.from)
     if (filters.to) p.set('to', filters.to)
-    if (tab === 'income' || tab === 'expense') p.set('direction', tab)
-    if (filters.q.trim()) p.set('q', filters.q.trim())
+    if (debouncedQ) p.set('q', debouncedQ)
     return p.toString()
-  }, [filters.from, filters.to, filters.q, tab])
+  }, [filters.from, filters.to, debouncedQ])
 
-  async function load() {
+  async function load({ refresh = false } = {}) {
     setLoading(true)
     setError('')
     try {
-      const data = await api(`/api/admin/banking/movements?${queryString}`)
+      const data = await api(
+        `/api/admin/banking/movements?${queryString}${refresh ? '&refresh=1' : ''}`,
+      )
       setItems(data.items || [])
       setSummary(
         data.summary || {
@@ -81,6 +111,7 @@ export default function AdminBankingPage() {
       setConfigured(Boolean(data.configured))
       setMessage(data.message || '')
       setFetchedAt(data.fetchedAt || null)
+      setLoaded(true)
     } catch (err) {
       setError(err.message)
       setItems([])
@@ -101,19 +132,84 @@ export default function AdminBankingPage() {
       if (filters.to) p.set('to', filters.to)
       await apiDownload(
         `/api/admin/banking/statement.csv?${p.toString()}`,
-        `priorbank_${filters.from}_${filters.to}.csv`,
+        `mtbank_${filters.from}_${filters.to}.csv`,
       )
     } catch (err) {
       setError(err.message)
     }
   }
 
+  async function syncPayments() {
+    setError('')
+    setSyncing(true)
+    try {
+      const data = await api('/api/admin/banking/sync', { method: 'POST', body: {} })
+      const paid = data.paid?.length || 0
+      if (data.message && !data.ok) {
+        setMessage(data.message)
+      } else {
+        setMessage(
+          paid
+            ? `Синхронизация: оплачено счетов — ${paid}`
+            : `Синхронизация: новых оплат нет (проверено поступлений: ${data.scanned ?? 0})`,
+        )
+      }
+      await load({ refresh: true })
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setSyncing(false)
+    }
+  }
+
   const currency = account?.currency || 'BYN'
+  // Скелетон показываем только до первого ответа банка. При обновлении
+  // фильтров старые данные остаются на экране, чтобы не было мерцания.
+  const showSkeleton = loading && !loaded
   const emptyLabel = !configured
-    ? 'Нет данных: Priorbank API ещё не подключён'
-    : loading
-      ? 'Загрузка…'
-      : 'За период операций нет'
+    ? 'Нет данных: MTBank API ещё не подключён'
+    : tab === 'income'
+      ? 'За период поступлений нет'
+      : tab === 'expense'
+        ? 'За период списаний нет'
+        : 'За период операций нет'
+
+  // Вкладка фильтрует уже загруженные операции — без обращения к банку.
+  const visibleItems = useMemo(
+    () => (tab === 'statement' ? items : items.filter((row) => row.direction === tab)),
+    [items, tab],
+  )
+
+  const skeletonRows = Array.from({ length: 5 }, (_, i) => (
+    <tr key={`skeleton-${i}`} className="border-t border-white/[0.06]">
+      <td className="px-3 py-3">
+        <Skeleton className="h-4 w-20" />
+      </td>
+      {tab === 'statement' ? (
+        <td className="px-3 py-3">
+          <Skeleton className="h-4 w-14" />
+        </td>
+      ) : null}
+      <td className="px-3 py-3">
+        <Skeleton className="h-4 w-24" />
+      </td>
+      <td className="px-3 py-3">
+        <Skeleton className="h-4 w-32" />
+      </td>
+      <td className="px-3 py-3">
+        <Skeleton className="h-4 w-20" />
+      </td>
+      <td className="px-3 py-3">
+        <Skeleton className="h-4 w-48 max-w-full" />
+      </td>
+      <td className="px-3 py-3">
+        <Skeleton className="h-4 w-28" />
+      </td>
+      <td className="px-3 py-3">
+        <Skeleton className="h-4 w-20" />
+      </td>
+    </tr>
+  ))
 
   return (
     <div className="space-y-5 text-[#f3f8ff]">
@@ -121,43 +217,97 @@ export default function AdminBankingPage() {
         <div>
           <h1 className="m-0 text-[28px] font-bold leading-tight text-white">Банкинг</h1>
           <p className="mt-1 text-sm text-[#9db8d4]">
-            Поступления, списания и выписка по расчётному счёту из Priorbank API.
+            Поступления, списания и выписка по расчётному счёту из MTBank Open API.
           </p>
         </div>
-        <Button variant="secondary" disabled={loading} onClick={load}>
-          <RefreshCw className={`size-4 ${loading ? 'animate-spin' : ''}`} />
-          Обновить
-        </Button>
+        <div className="flex flex-wrap gap-2">
+          <Button variant="secondary" disabled={loading || syncing} onClick={syncPayments}>
+            <RefreshCw className={`size-4 ${syncing ? 'animate-spin' : ''}`} />
+            Проверить оплаты
+          </Button>
+          <Button
+            variant="secondary"
+            disabled={loading}
+            onClick={() => load({ refresh: true })}
+          >
+            <RefreshCw className={`size-4 ${loading ? 'animate-spin' : ''}`} />
+            Обновить
+          </Button>
+        </div>
       </div>
 
       <SegmentedControl items={tabs} value={tab} onChange={setTab} />
 
-      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4" aria-busy={showSkeleton}>
         <div className="rounded-2xl border border-white/[0.06] bg-[#0b1f3a] p-4">
           <div className="text-xs font-bold uppercase tracking-wide text-[#9db8d4]">Счёт</div>
-          <div className="mt-2 font-mono text-sm font-semibold text-[#8fd2ff]">
-            {account?.iban || '—'}
-          </div>
-          <div className="mt-1 text-xs text-[#9db8d4]">{account?.name || 'Priorbank'}</div>
+          {showSkeleton ? (
+            <>
+              <Skeleton className="mt-2 h-5 w-44" />
+              <Skeleton className="mt-2 h-3 w-28" />
+            </>
+          ) : (
+            <>
+              <div className="mt-2 font-mono text-sm font-semibold text-[#8fd2ff]">
+                {account?.iban || '—'}
+              </div>
+              <div className="mt-1 text-xs text-[#9db8d4]">{account?.name || 'MTBank'}</div>
+            </>
+          )}
         </div>
         <div className="rounded-2xl border border-white/[0.06] bg-[#0b1f3a] p-4">
           <div className="text-xs font-bold uppercase tracking-wide text-[#9db8d4]">Остаток</div>
-          <div className="mt-2 text-xl font-bold text-white">
-            {account?.balance == null ? '—' : money(account.balance, currency)}
-          </div>
-          <div className="mt-1 text-xs text-[#9db8d4]">
-            {configured ? 'Источник: Priorbank' : 'API не настроен'}
-          </div>
+          {showSkeleton ? (
+            <>
+              <Skeleton className="mt-2 h-6 w-32" />
+              <Skeleton className="mt-2 h-3 w-24" />
+            </>
+          ) : (
+            <>
+              <div className="mt-2 text-xl font-bold text-white">
+                {account?.balance == null ? '—' : money(account.balance, currency)}
+              </div>
+              <div className="mt-1 text-xs text-[#9db8d4]">
+                {!configured
+                  ? 'API не настроен'
+                  : account?.balanceAt
+                    ? `MTBank · на ${formatDateTime(account.balanceAt)}`
+                    : 'Источник: MTBank'}
+              </div>
+            </>
+          )}
         </div>
         <div className="rounded-2xl border border-white/[0.06] bg-[#0b1f3a] p-4">
           <div className="text-xs font-bold uppercase tracking-wide text-[#9db8d4]">Доходы</div>
-          <div className="mt-2 text-xl font-bold text-[#7dffc2]">{money(summary.income, currency)}</div>
-          <div className="mt-1 text-xs text-[#9db8d4]">{summary.incomeCount} операций</div>
+          {showSkeleton ? (
+            <>
+              <Skeleton className="mt-2 h-6 w-32" />
+              <Skeleton className="mt-2 h-3 w-20" />
+            </>
+          ) : (
+            <>
+              <div className="mt-2 text-xl font-bold text-[#7dffc2]">
+                {money(summary.income, currency)}
+              </div>
+              <div className="mt-1 text-xs text-[#9db8d4]">{summary.incomeCount} операций</div>
+            </>
+          )}
         </div>
         <div className="rounded-2xl border border-white/[0.06] bg-[#0b1f3a] p-4">
           <div className="text-xs font-bold uppercase tracking-wide text-[#9db8d4]">Расходы</div>
-          <div className="mt-2 text-xl font-bold text-[#ff9b9b]">{money(summary.expense, currency)}</div>
-          <div className="mt-1 text-xs text-[#9db8d4]">{summary.expenseCount} операций</div>
+          {showSkeleton ? (
+            <>
+              <Skeleton className="mt-2 h-6 w-32" />
+              <Skeleton className="mt-2 h-3 w-20" />
+            </>
+          ) : (
+            <>
+              <div className="mt-2 text-xl font-bold text-[#ff9b9b]">
+                {money(summary.expense, currency)}
+              </div>
+              <div className="mt-1 text-xs text-[#9db8d4]">{summary.expenseCount} операций</div>
+            </>
+          )}
         </div>
       </div>
 
@@ -194,9 +344,13 @@ export default function AdminBankingPage() {
 
         <div className="mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-white/[0.06] pt-4">
           <div className="text-xs text-[#9db8d4]">
-            {fetchedAt
-              ? `Обновлено ${new Date(fetchedAt).toLocaleString('ru-RU')}`
-              : 'Данные подтягиваются из Priorbank API'}
+            {showSkeleton
+              ? 'Запрашиваем данные из MTBank…'
+              : fetchedAt
+                ? `Обновлено ${new Date(fetchedAt).toLocaleString('ru-RU')}${
+                    loading ? ' · обновление…' : ''
+                  }`
+                : 'Данные подтягиваются из MTBank Open API'}
             {tab === 'statement' ? (
               <span className="ml-2 text-[#cfe6ff]">
                 · сальдо {money(summary.net, currency)}
@@ -238,8 +392,10 @@ export default function AdminBankingPage() {
               <th className="px-3 py-3 font-bold">Остаток</th>
             </tr>
           </thead>
-          <tbody>
-            {items.map((row) => {
+          <tbody aria-busy={showSkeleton}>
+            {showSkeleton
+              ? skeletonRows
+              : visibleItems.map((row) => {
               const isExpense = row.direction === 'expense'
               return (
                 <tr key={row.id} className="border-t border-white/[0.06] align-top">
@@ -275,7 +431,7 @@ export default function AdminBankingPage() {
                 </tr>
               )
             })}
-            {!items.length ? (
+            {!showSkeleton && !visibleItems.length ? (
               <tr>
                 <td
                   colSpan={tab === 'statement' ? 8 : 7}

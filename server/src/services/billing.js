@@ -1,31 +1,80 @@
 import { query, withTransaction } from '../db.js';
 
+/**
+ * Подбор действующего тарифа.
+ *
+ * Обычный режим, по убыванию приоритета:
+ *   компания + проект → компания → проект → общий
+ *
+ * Режим индивидуального прайса: если у компании есть хотя бы один свой
+ * действующий тариф, он считается её полным прайсом. Общие и проектные цены
+ * такому клиенту не подмешиваются — если услуги в прайсе нет, вернётся null
+ * (см. tariffMissingReason для понятного текста ошибки).
+ */
 export async function getEffectiveTariff({ companyId, projectId, serviceId, at = new Date() }) {
   const date = at.toISOString().slice(0, 10);
+  const pid = projectId || null;
+
+  if (companyId) {
+    const own = await query(
+      `SELECT t.*
+       FROM tariffs t
+       WHERE t.service_id = :service_id
+         AND t.company_id = :company_id
+         AND (t.project_id = :project_id OR t.project_id IS NULL)
+         AND t.valid_from <= :date
+         AND (t.valid_to IS NULL OR t.valid_to >= :date)
+       ORDER BY (t.project_id IS NOT NULL) DESC, t.valid_from DESC
+       LIMIT 1`,
+      { service_id: serviceId, company_id: companyId, project_id: pid, date },
+    );
+    if (own[0]) return own[0];
+
+    // Услуги в личном прайсе нет. Если личный прайс вообще есть — общие цены
+    // этому клиенту не применяются.
+    const hasOwnPriceList = await query(
+      `SELECT 1 FROM tariffs
+       WHERE company_id = :company_id
+         AND valid_from <= :date
+         AND (valid_to IS NULL OR valid_to >= :date)
+       LIMIT 1`,
+      { company_id: companyId, date },
+    );
+    if (hasOwnPriceList.length) return null;
+  }
+
   const rows = await query(
     `SELECT t.*
      FROM tariffs t
      WHERE t.service_id = :service_id
+       AND t.company_id IS NULL
+       AND (t.project_id = :project_id OR t.project_id IS NULL)
        AND t.valid_from <= :date
        AND (t.valid_to IS NULL OR t.valid_to >= :date)
-       AND (
-         (t.company_id = :company_id AND t.project_id = :project_id)
-         OR (t.company_id = :company_id AND t.project_id IS NULL)
-         OR (t.company_id IS NULL AND t.project_id IS NULL)
-       )
-     ORDER BY
-       (t.project_id IS NOT NULL) DESC,
-       (t.company_id IS NOT NULL) DESC,
-       t.valid_from DESC
+     ORDER BY (t.project_id IS NOT NULL) DESC, t.valid_from DESC
      LIMIT 1`,
-    {
-      service_id: serviceId,
-      company_id: companyId,
-      project_id: projectId || null,
-      date,
-    },
+    { service_id: serviceId, project_id: pid, date },
   );
   return rows[0] || null;
+}
+
+/** Понятное объяснение, почему тариф не нашёлся. */
+export async function tariffMissingReason({ companyId, at = new Date() }) {
+  if (companyId) {
+    const date = at.toISOString().slice(0, 10);
+    const own = await query(
+      `SELECT 1 FROM tariffs
+       WHERE company_id = :company_id
+         AND valid_from <= :date
+         AND (valid_to IS NULL OR valid_to >= :date)
+       LIMIT 1`,
+      { company_id: companyId, date },
+    );
+    if (own.length) {
+      return 'У клиента индивидуальный прайс, общие цены для него не применяются — добавьте эту услугу в его прайс в разделе «Тарифы».';
+    }
+  }
+  return 'Задайте тариф для проекта или общий тариф в разделе «Тарифы».';
 }
 
 export async function applyBalanceChange({

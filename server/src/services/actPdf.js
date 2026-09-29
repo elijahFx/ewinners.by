@@ -1,6 +1,6 @@
 import path from 'path';
 import { config } from '../db.js';
-import { createPdfWriter, docsDir, drawHeader, money } from './pdfHelpers.js';
+import { createPdfWriter, docsDir, drawDirectorStamp, drawHeader, money } from './pdfHelpers.js';
 
 export async function generateActPdf({ number, amount, purpose, company, createdAt, paidAt }) {
   const fileName = `act-${number.replace(/[^\w.-]+/g, '_')}.pdf`;
@@ -66,12 +66,37 @@ export async function generateActPdf({ number, amount, purpose, company, created
       { width },
     );
 
-  doc.moveDown(2);
-  doc.font('Regular').fontSize(10).fillColor('#333');
-  doc.text('Исполнитель _________________ / _______________/', left, doc.y, { width: width / 2 - 10 });
-  doc.text('Заказчик _________________ / _______________/', left + width / 2, doc.y - 12, {
-    width: width / 2 - 10,
+  doc.moveDown(0.9);
+  const signaturesY = doc.y;
+  const colW = width / 2 - 12;
+
+  doc.font('Bold').fontSize(10).fillColor('#0b1f3a').text('Исполнитель', left, signaturesY, {
+    width: colW,
+    lineBreak: false,
   });
+  drawDirectorStamp(doc, { left, width: colW, x: left, y: signaturesY + 14 });
+
+  const customerY = signaturesY;
+  doc.font('Bold').fontSize(10).fillColor('#0b1f3a').text('Заказчик', left + width / 2, customerY, {
+    width: colW,
+    lineBreak: false,
+  });
+  doc
+    .font('Regular')
+    .fontSize(10)
+    .fillColor('#333')
+    .text('_________________ / _______________/', left + width / 2, customerY + 48, {
+      width: colW,
+      lineBreak: false,
+    });
+  doc
+    .font('Regular')
+    .fontSize(8)
+    .fillColor('#666')
+    .text('подпись / ФИО', left + width / 2, customerY + 64, {
+      width: colW,
+      lineBreak: false,
+    });
 
   await done();
   return { filePath, fileName };

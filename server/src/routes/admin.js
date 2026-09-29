@@ -20,10 +20,12 @@ import {
 } from '../services/authMail.js';
 import { linkUserCompany, unlinkUserCompany, listUserCompanies, mapCompany } from '../services/userCompanies.js';
 import {
-  fetchPriorbankStatement,
-  getPriorbankStatus,
+  fetchMtbankStatement,
+  getMtbankStatus,
   summarizeMovements,
-} from '../services/priorbank.js';
+} from '../services/mtbank.js';
+import { syncMtbankPayments } from '../services/bankSync.js';
+import { markInvoicePaid } from '../services/invoicePayment.js';
 import { generateInvoicePdf } from '../services/invoicePdf.js';
 
 async function loadInvoicePdf(invoice) {
@@ -121,7 +123,18 @@ router.get('/overview', async (_req, res) => {
 });
 
 router.get('/companies', async (_req, res) => {
-  const rows = await query('SELECT * FROM companies ORDER BY id DESC');
+  // has_own_tariffs = у клиента индивидуальный прайс (общие цены ему не применяются)
+  const rows = await query(
+    `SELECT c.*,
+            EXISTS (
+              SELECT 1 FROM tariffs t
+              WHERE t.company_id = c.id
+                AND t.valid_from <= CURDATE()
+                AND (t.valid_to IS NULL OR t.valid_to >= CURDATE())
+            ) AS has_own_tariffs
+     FROM companies c
+     ORDER BY c.id DESC`,
+  );
   res.json({ items: rows });
 });
 
@@ -133,10 +146,10 @@ router.post('/companies', requireRoles('admin'), async (req, res) => {
     const result = await query(
       `INSERT INTO companies
         (name, unp, legal_address, bank_name, iban, bic, credit_limit, min_balance, notify_threshold,
-         low_balance_action, manager_name, manager_phone, manager_email)
+         low_balance_action, buyout_enabled, manager_name, manager_phone, manager_email)
        VALUES
         (:name, :unp, :legal_address, :bank_name, :iban, :bic, :credit_limit, :min_balance, :notify_threshold,
-         :low_balance_action, :manager_name, :manager_phone, :manager_email)`,
+         :low_balance_action, :buyout_enabled, :manager_name, :manager_phone, :manager_email)`,
       {
         name,
         unp: req.body.unp || null,
@@ -148,6 +161,7 @@ router.post('/companies', requireRoles('admin'), async (req, res) => {
         min_balance: Number(req.body.minBalance || 0),
         notify_threshold: Number(req.body.notifyThreshold || 500),
         low_balance_action: req.body.lowBalanceAction || 'allow_credit',
+        buyout_enabled: req.body.buyoutEnabled ? 1 : 0,
         manager_name: req.body.managerName || null,
         manager_phone: req.body.managerPhone || null,
         manager_email: req.body.managerEmail || null,
@@ -178,6 +192,7 @@ router.patch('/companies/:id', requireRoles('admin'), async (req, res) => {
          min_balance = COALESCE(:min_balance, min_balance),
          notify_threshold = COALESCE(:notify_threshold, notify_threshold),
          low_balance_action = COALESCE(:low_balance_action, low_balance_action),
+         buyout_enabled = COALESCE(:buyout_enabled, buyout_enabled),
          manager_name = COALESCE(:manager_name, manager_name),
          manager_phone = COALESCE(:manager_phone, manager_phone),
          manager_email = COALESCE(:manager_email, manager_email)
@@ -195,6 +210,9 @@ router.patch('/companies/:id', requireRoles('admin'), async (req, res) => {
         min_balance: req.body.minBalance ?? null,
         notify_threshold: req.body.notifyThreshold ?? null,
         low_balance_action: req.body.lowBalanceAction ?? null,
+        // Галочка «Отдел выкупа»: +1,50 BYN за выкупленный заказ.
+        buyout_enabled:
+          req.body.buyoutEnabled === undefined ? null : req.body.buyoutEnabled ? 1 : 0,
         manager_name: req.body.managerName ?? null,
         manager_phone: req.body.managerPhone ?? null,
         manager_email: req.body.managerEmail ?? null,
@@ -587,7 +605,13 @@ router.patch('/users/:id/status', requireRoles('admin'), async (req, res) => {
 
 router.get('/projects', async (req, res) => {
   const params = {};
-  let sql = `SELECT p.*, c.name AS company_name FROM projects p JOIN companies c ON c.id = p.company_id WHERE 1=1`;
+  let sql = `SELECT p.*, c.name AS company_name,
+                    (SELECT COUNT(*) FROM tariffs t
+                      WHERE t.project_id = p.id
+                        AND t.company_id IS NULL
+                        AND t.valid_to IS NULL
+                        AND t.valid_from <= CURDATE()) AS tariffs_count
+             FROM projects p JOIN companies c ON c.id = p.company_id WHERE 1=1`;
   if (req.query.companyId) {
     sql += ' AND p.company_id = :company_id';
     params.company_id = Number(req.query.companyId);
@@ -624,6 +648,107 @@ router.post('/projects', requireRoles('admin'), async (req, res) => {
 router.get('/services', async (_req, res) => {
   const rows = await query('SELECT * FROM services ORDER BY id');
   res.json({ items: rows });
+});
+
+/**
+ * Прайс проекта: все активные услуги + цена, заданная именно этому проекту.
+ * Пустая цена = услуга в проекте не тарифицируется.
+ */
+router.get('/projects/:id/tariffs', async (req, res) => {
+  try {
+    const projectId = Number(req.params.id);
+    const projects = await query(
+      `SELECT p.id, p.name, p.company_id, c.name AS company_name
+       FROM projects p JOIN companies c ON c.id = p.company_id
+       WHERE p.id = :id`,
+      { id: projectId },
+    );
+    if (!projects[0]) return res.status(404).json({ error: 'Проект не найден' });
+
+    const rows = await query(
+      `SELECT s.id AS service_id, s.code, s.name, s.unit,
+              t.id AS tariff_id, t.price, t.billing_type
+       FROM services s
+       LEFT JOIN tariffs t
+         ON t.service_id = s.id
+        AND t.project_id = :project_id
+        AND t.company_id IS NULL
+        AND t.valid_to IS NULL
+        AND t.valid_from <= CURDATE()
+       WHERE s.is_active = 1
+       ORDER BY s.id`,
+      { project_id: projectId },
+    );
+
+    res.json({ project: projects[0], items: rows });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Не удалось загрузить тарифы проекта' });
+  }
+});
+
+/** Сохранить прайс проекта (пустая цена удаляет тариф услуги). */
+router.put('/projects/:id/tariffs', requireRoles('admin'), async (req, res) => {
+  try {
+    const projectId = Number(req.params.id);
+    const projects = await query('SELECT id, name FROM projects WHERE id = :id', { id: projectId });
+    if (!projects[0]) return res.status(404).json({ error: 'Проект не найден' });
+
+    const items = Array.isArray(req.body?.items) ? req.body.items : [];
+    let saved = 0;
+    let removed = 0;
+
+    for (const item of items) {
+      const serviceId = Number(item.serviceId);
+      if (!serviceId) continue;
+
+      const raw = item.price;
+      const isEmpty = raw === null || raw === undefined || String(raw).trim() === '';
+      const price = isEmpty ? NaN : Number(raw);
+
+      const existing = await query(
+        `SELECT id FROM tariffs
+         WHERE company_id IS NULL AND project_id = :project_id
+           AND service_id = :service_id AND valid_to IS NULL
+         ORDER BY id DESC LIMIT 1`,
+        { project_id: projectId, service_id: serviceId },
+      );
+
+      if (isEmpty || !Number.isFinite(price) || price <= 0) {
+        if (existing.length) {
+          await query('DELETE FROM tariffs WHERE id = :id', { id: existing[0].id });
+          removed += 1;
+        }
+        continue;
+      }
+
+      if (existing.length) {
+        await query(`UPDATE tariffs SET price = :price, billing_type = :bt WHERE id = :id`, {
+          price,
+          bt: item.billingType || 'unit',
+          id: existing[0].id,
+        });
+      } else {
+        await query(
+          `INSERT INTO tariffs (company_id, project_id, service_id, price, billing_type, valid_from)
+           VALUES (NULL, :project_id, :service_id, :price, :bt, CURDATE())`,
+          {
+            project_id: projectId,
+            service_id: serviceId,
+            price,
+            bt: item.billingType || 'unit',
+          },
+        );
+      }
+      saved += 1;
+    }
+
+    await audit(req.user.id, 'update_project_tariffs', 'project', projectId, { saved, removed });
+    res.json({ ok: true, saved, removed });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Не удалось сохранить тарифы проекта' });
+  }
 });
 
 router.post('/services', requireRoles('admin'), async (req, res) => {
@@ -721,10 +846,10 @@ router.post('/balance/adjust', requireRoles('admin', 'accountant'), async (req, 
 
 router.get('/banking/status', async (_req, res) => {
   try {
-    res.json(await getPriorbankStatus());
+    res.json(await getMtbankStatus());
   } catch (err) {
     console.error(err);
-    res.status(500).json({ error: 'Не удалось проверить Priorbank' });
+    res.status(500).json({ error: 'Не удалось проверить MTBank' });
   }
 });
 
@@ -732,8 +857,10 @@ router.get('/banking/movements', async (req, res) => {
   try {
     const from = String(req.query.from || '').slice(0, 10);
     const to = String(req.query.to || '').slice(0, 10);
-    const data = await fetchPriorbankStatement({ from, to });
-    let items = data.movements || [];
+    // refresh=1 bypasses the short-lived statement cache (used by «Обновить»).
+    const data = await fetchMtbankStatement({ from, to, refresh: req.query.refresh === '1' });
+    // Copy: the cached array must not be reordered in place by the sort below.
+    let items = [...(data.movements || [])];
     const direction = req.query.direction;
     if (direction === 'income' || direction === 'expense') {
       items = items.filter((m) => m.direction === direction);
@@ -749,6 +876,7 @@ router.get('/banking/movements', async (req, res) => {
     items.sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')));
     res.json({
       configured: data.configured,
+      ready: data.ready,
       provider: data.provider,
       account: data.account,
       period: data.period || { from, to },
@@ -759,7 +887,7 @@ router.get('/banking/movements', async (req, res) => {
     });
   } catch (err) {
     console.error(err);
-    res.status(400).json({ error: err.message || 'Не удалось загрузить движения Priorbank' });
+    res.status(400).json({ error: err.message || 'Не удалось загрузить движения MTBank' });
   }
 });
 
@@ -767,9 +895,10 @@ router.get('/banking/summary', async (req, res) => {
   try {
     const from = String(req.query.from || '').slice(0, 10);
     const to = String(req.query.to || '').slice(0, 10);
-    const data = await fetchPriorbankStatement({ from, to });
+    const data = await fetchMtbankStatement({ from, to });
     res.json({
       configured: data.configured,
+      ready: data.ready,
       provider: data.provider,
       account: data.account,
       period: data.period || { from, to },
@@ -779,7 +908,19 @@ router.get('/banking/summary', async (req, res) => {
     });
   } catch (err) {
     console.error(err);
-    res.status(400).json({ error: err.message || 'Не удалось посчитать итоги Priorbank' });
+    res.status(400).json({ error: err.message || 'Не удалось посчитать итоги MTBank' });
+  }
+});
+
+router.post('/banking/sync', requireRoles('admin', 'accountant'), async (req, res) => {
+  try {
+    const from = req.body?.from || req.query.from || null;
+    const to = req.body?.to || req.query.to || null;
+    const result = await syncMtbankPayments({ from, to, lookbackDays: 14 });
+    res.json(result);
+  } catch (err) {
+    console.error(err);
+    res.status(400).json({ error: err.message || 'Ошибка синхронизации MTBank' });
   }
 });
 
@@ -787,7 +928,7 @@ router.get('/banking/statement.csv', async (req, res) => {
   try {
     const from = String(req.query.from || '').slice(0, 10);
     const to = String(req.query.to || '').slice(0, 10);
-    const data = await fetchPriorbankStatement({ from, to });
+    const data = await fetchMtbankStatement({ from, to });
     const items = [...(data.movements || [])].sort((a, b) =>
       String(a.date || '').localeCompare(String(b.date || '')),
     );
@@ -827,12 +968,12 @@ router.get('/banking/statement.csv', async (req, res) => {
     res.setHeader('Content-Type', 'text/csv; charset=utf-8');
     res.setHeader(
       'Content-Disposition',
-      `attachment; filename="priorbank_${from || 'all'}_${to || 'all'}.csv"`,
+      `attachment; filename="mtbank_${from || 'all'}_${to || 'all'}.csv"`,
     );
     res.send(`\uFEFF${lines.join('\n')}`);
   } catch (err) {
     console.error(err);
-    res.status(400).json({ error: err.message || 'Ошибка экспорта выписки Priorbank' });
+    res.status(400).json({ error: err.message || 'Ошибка экспорта выписки MTBank' });
   }
 });
 
@@ -1368,119 +1509,92 @@ router.get('/invoices/:id/download', async (req, res) => {
 router.post('/invoices/:id/mark-paid', requireRoles('admin', 'accountant'), async (req, res) => {
   try {
     const id = Number(req.params.id);
-    const rows = await query('SELECT * FROM invoices WHERE id = :id LIMIT 1', { id });
-    const invoice = rows[0];
-    if (!invoice) return res.status(404).json({ error: 'Счёт не найден' });
-    if (invoice.status === 'paid') {
+    const result = await markInvoicePaid({
+      invoiceId: id,
+      comment: `Ручное подтверждение оплаты счёта`,
+      createdBy: req.user.id,
+    });
+
+    if (result.alreadyPaid) {
       return res.status(400).json({ error: 'Счёт уже отмечен оплаченным' });
     }
-    if (invoice.status === 'cancelled') {
-      return res.status(400).json({ error: 'Отменённый счёт нельзя отметить оплаченным' });
-    }
 
-    const companyId = Number(invoice.company_id);
-    const amount = Number(invoice.amount);
-    if (!(amount > 0)) return res.status(400).json({ error: 'Некорректная сумма счёта' });
-
-    const result = await withTransaction(async (conn) => {
-      const applied = await applyBalanceChange({
-        conn,
-        companyId,
-        invoiceId: id,
-        type: 'credit',
-        category: 'bank_payment',
-        amount,
-        comment: `Ручное подтверждение оплаты счёта ${invoice.number}`,
-        createdBy: req.user.id,
-      });
-
-      await conn.execute(
-        `UPDATE invoices
-         SET status = 'paid', paid_amount = amount, paid_at = NOW()
-         WHERE id = ?`,
-        [id],
-      );
-
-      await conn.execute(
-        `UPDATE documents
-         SET status = 'paid'
-         WHERE company_id = ? AND type = 'invoice' AND number = ?`,
-        [companyId, invoice.number],
-      );
-
-      return applied;
-    });
-
-    await notifyCompanyUsers(
-      companyId,
-      'Счёт оплачен',
-      `Счёт ${invoice.number} отмечен оплаченным. На баланс зачислено ${amount.toFixed(2)} BYN.`,
-    );
-
-    try {
-      const companyRows = await query('SELECT * FROM companies WHERE id = :id LIMIT 1', {
-        id: companyId,
-      });
-      const invRows = await query('SELECT * FROM invoices WHERE id = :id LIMIT 1', { id });
-      if (invRows[0] && companyRows[0]) {
-        const { ensureActForInvoice } = await import('../services/documents.js');
-        await ensureActForInvoice(invRows[0], companyRows[0]);
-        await notifyCompanyUsers(
-          companyId,
-          'Акт оказанных услуг',
-          `Сформирован акт ${invoice.number}. Документ доступен в разделе «Документы».`,
-        );
-      }
-    } catch (err) {
-      console.warn('Act generation failed:', err.message);
-    }
-
-    await audit(req.user.id, 'mark_invoice_paid', 'invoice', id, {
-      companyId,
-      amount,
-      number: invoice.number,
-    });
-
-    const updated = await query(
-      `SELECT i.*, c.name AS company_name, c.unp AS company_unp, c.balance AS company_balance
-       FROM invoices i
-       JOIN companies c ON c.id = i.company_id
-       WHERE i.id = :id`,
-      { id },
-    );
-
-    res.json({ ok: true, invoice: updated[0], balance: result });
+    res.json({ ok: true, invoice: result.invoice, balance: result.balance });
   } catch (err) {
     console.error(err);
-    res.status(400).json({ error: err.message || 'Не удалось отметить счёт оплаченным' });
+    res.status(err.status || 400).json({ error: err.message || 'Не удалось отметить счёт оплаченным' });
   }
 });
 
 router.get('/transactions', async (req, res) => {
   const params = {};
-  let sql = `SELECT t.*, c.name AS company_name, s.name AS service_name
-             FROM transactions t
-             JOIN companies c ON c.id = t.company_id
-             LEFT JOIN services s ON s.id = t.service_id WHERE 1=1`;
+  const where = ['1=1'];
+
   if (req.query.companyId) {
-    sql += ' AND t.company_id = :company_id';
+    where.push('t.company_id = :company_id');
     params.company_id = Number(req.query.companyId);
   }
   if (req.query.type === 'credit' || req.query.type === 'debit') {
-    sql += ' AND t.type = :type';
+    where.push('t.type = :type');
     params.type = req.query.type;
   }
+  if (req.query.category) {
+    where.push('t.category = :category');
+    params.category = String(req.query.category);
+  }
   if (req.query.from) {
-    sql += ' AND DATE(t.created_at) >= :from_date';
+    where.push('DATE(t.created_at) >= :from_date');
     params.from_date = String(req.query.from).slice(0, 10);
   }
   if (req.query.to) {
-    sql += ' AND DATE(t.created_at) <= :to_date';
+    where.push('DATE(t.created_at) <= :to_date');
     params.to_date = String(req.query.to).slice(0, 10);
   }
-  sql += ' ORDER BY t.created_at DESC LIMIT 500';
-  const rows = await query(sql, params);
-  res.json({ items: rows });
+  const q = String(req.query.q || '').trim();
+  if (q) {
+    where.push('(c.name LIKE :q OR c.unp LIKE :q OR s.name LIKE :q OR t.comment LIKE :q)');
+    params.q = `%${q}%`;
+  }
+
+  const limit = Math.min(Math.max(Number(req.query.limit) || 500, 1), 2000);
+  const whereSql = where.join(' AND ');
+
+  const rows = await query(
+    `SELECT t.id, t.created_at, t.type, t.category, t.amount, t.quantity, t.unit_price,
+            t.balance_before, t.balance_after, t.comment, t.employee_name, t.crm_event_id,
+            t.company_id, t.project_id,
+            c.name AS company_name, c.unp AS company_unp,
+            s.name AS service_name, s.unit AS service_unit,
+            p.name AS project_name
+     FROM transactions t
+     JOIN companies c ON c.id = t.company_id
+     LEFT JOIN services s ON s.id = t.service_id
+     LEFT JOIN projects p ON p.id = t.project_id
+     WHERE ${whereSql}
+     ORDER BY t.created_at DESC, t.id DESC
+     LIMIT ${limit}`,
+    params,
+  );
+
+  const totals = await query(
+    `SELECT
+        COALESCE(SUM(CASE WHEN t.type = 'debit' THEN t.amount ELSE 0 END), 0) AS debit_total,
+        COALESCE(SUM(CASE WHEN t.type = 'credit' THEN t.amount ELSE 0 END), 0) AS credit_total,
+        COALESCE(SUM(CASE WHEN t.type = 'debit' THEN 1 ELSE 0 END), 0) AS debit_count,
+        COUNT(*) AS total_count
+     FROM transactions t
+     JOIN companies c ON c.id = t.company_id
+     LEFT JOIN services s ON s.id = t.service_id
+     WHERE ${whereSql}`,
+    params,
+  );
+
+  res.json({
+    items: rows,
+    totals: totals[0] || null,
+    limit,
+    truncated: Number(totals[0]?.total_count || 0) > rows.length,
+  });
 });
 
 router.get('/crm-errors', async (_req, res) => {

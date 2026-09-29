@@ -19,6 +19,7 @@ import {
   Landmark,
   MessageCircle,
   Tags,
+  ArrowDownRight,
 } from 'lucide-react'
 import { useAuth } from './AuthContext'
 import { api, mediaUrl } from './api'
@@ -81,7 +82,7 @@ export default function CabinetLayout() {
   useEffect(() => {
     const token = localStorage.getItem('ew_token')
     if (!token || !user) return undefined
-    const API_BASE = (import.meta.env.VITE_API_URL || 'https://test.zkh.by').replace(/\/$/, '')
+    const API_BASE = (import.meta.env.VITE_API_URL || 'https://178.172.137.114.sslip.io').replace(/\/$/, '')
     const socket = io(API_BASE, {
       path: '/socket.io',
       transports: ['websocket', 'polling'],
@@ -114,6 +115,7 @@ export default function CabinetLayout() {
     { to: '/cabinet/admin/documents', label: 'Документы', icon: FileText },
     { to: '/cabinet/admin/banking', label: 'Банкинг', icon: Landmark },
     { to: '/cabinet/admin/balance', label: 'Корректировки', icon: Wallet },
+    { to: '/cabinet/admin/write-offs', label: 'Списания', icon: ArrowDownRight },
     { to: '/cabinet/admin/tariffs', label: 'Тарифы', icon: Tags },
     { to: '/cabinet/admin/api-keys', label: 'API-ключи', icon: KeyRound },
     ...(user?.role === 'admin'

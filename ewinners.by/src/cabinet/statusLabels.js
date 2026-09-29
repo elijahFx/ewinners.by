@@ -39,3 +39,23 @@ export function statusLabel(value) {
   const key = String(value)
   return STATUS_LABELS[key] || STATUS_LABELS[key.toLowerCase()] || key
 }
+
+/** Категории операций по балансу (transactions.category). */
+export const CATEGORY_LABELS = {
+  bank_payment: 'Банковское поступление',
+  manual_credit: 'Ручное зачисление',
+  manual_debit: 'Ручное списание',
+  refund: 'Возврат',
+  bonus: 'Бонус',
+  transfer: 'Перевод',
+  crm_action: 'Списание по CRM',
+  subscription: 'Абонентская плата',
+  extra_service: 'Дополнительная услуга',
+  recalc: 'Пересчёт',
+}
+
+export function categoryLabel(value) {
+  if (value == null || value === '') return '—'
+  const key = String(value)
+  return CATEGORY_LABELS[key] || CATEGORY_LABELS[key.toLowerCase()] || statusLabel(key)
+}

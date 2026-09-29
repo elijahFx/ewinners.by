@@ -5,7 +5,7 @@ import { MessageCircle, Smile, Paperclip, Send, X, FileText, Users, Upload } fro
 import { useAuth } from '../AuthContext'
 import { api, mediaUrl } from '../api'
 
-const API_BASE = (import.meta.env.VITE_API_URL || 'https://test.zkh.by').replace(/\/$/, '')
+const API_BASE = (import.meta.env.VITE_API_URL || 'https://178.172.137.114.sslip.io').replace(/\/$/, '')
 const MAX_CHAT_FILES = 5
 
 const ALLOWED_FILE_EXT = /\.(pdf|doc|docx|xls|xlsx|zip|txt)$/i

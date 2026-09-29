@@ -15,6 +15,7 @@ const empty = {
   managerName: '',
   managerPhone: '',
   managerEmail: '',
+  buyoutEnabled: false,
 }
 
 export default function AdminCompaniesPage() {
@@ -125,6 +126,22 @@ export default function AdminCompaniesPage() {
     }
   }
 
+  // Галочка «Отдел выкупа» переключается прямо в списке.
+  async function toggleBuyout(company) {
+    const next = !Number(company.buyout_enabled)
+    try {
+      await api(`/api/admin/companies/${company.id}`, {
+        method: 'PATCH',
+        body: { buyoutEnabled: next },
+      })
+      setItems((prev) =>
+        prev.map((c) => (c.id === company.id ? { ...c, buyout_enabled: next ? 1 : 0 } : c)),
+      )
+    } catch (err) {
+      alert(err.message)
+    }
+  }
+
   return (
     <>
       <div className="cab-page-head">
@@ -206,6 +223,15 @@ export default function AdminCompaniesPage() {
                 <option value="allow_debt">Разрешить задолженность</option>
               </select>
             </label>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 8, alignSelf: 'end' }}>
+              <input
+                type="checkbox"
+                style={{ width: 'auto' }}
+                checked={Boolean(form.buyoutEnabled)}
+                onChange={(e) => setForm({ ...form, buyoutEnabled: e.target.checked })}
+              />
+              Отдел выкупа (+1,50 BYN за выкупленный заказ)
+            </label>
             <label>
               Менеджер
               <input value={form.managerName} onChange={(e) => setForm({ ...form, managerName: e.target.value })} />
@@ -237,6 +263,8 @@ export default function AdminCompaniesPage() {
                   <th>Баланс</th>
                   <th>Лимит</th>
                   <th>Статус</th>
+                  <th>Отдел выкупа</th>
+                  <th>Прайс</th>
                 </tr>
               </thead>
               <tbody>
@@ -249,6 +277,32 @@ export default function AdminCompaniesPage() {
                     <td>{Number(c.credit_limit).toFixed(2)}</td>
                     <td>
                       <span className="cab-chip">{statusLabel(c.status)}</span>
+                    </td>
+                    <td>
+                      <label
+                        title="Клиенту дополнительно списывается 1,50 BYN за каждый выкупленный заказ"
+                        style={{ display: 'inline-flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}
+                      >
+                        <input
+                          type="checkbox"
+                          style={{ width: 'auto' }}
+                          checked={Number(c.buyout_enabled) === 1}
+                          onChange={() => toggleBuyout(c)}
+                        />
+                        <span className="cab-muted">{Number(c.buyout_enabled) === 1 ? 'вкл' : 'выкл'}</span>
+                      </label>
+                    </td>
+                    <td>
+                      {Number(c.has_own_tariffs) ? (
+                        <span
+                          className="cab-chip"
+                          title="У клиента задан индивидуальный прайс: общие и проектные цены для него не применяются"
+                        >
+                          Индивидуальный
+                        </span>
+                      ) : (
+                        <span className="cab-muted">Общий</span>
+                      )}
                     </td>
                   </tr>
                 ))}

@@ -9,7 +9,9 @@
     "migrate": "node src/migrate.js",
     "seed": "node src/seed.js",
     "reset:handoff": "node src/resetForHandoff.js",
-    "create:techadmin": "node src/createTechAdmin.js"
+    "create:techadmin": "node src/createTechAdmin.js",
+    "create:admin": "node src/createAdmin.js",
+    "tariffs:project": "node src/setupProjectTariffs.js"
   },
   "dependencies": {
     "bcrypt": "^6.0.0",

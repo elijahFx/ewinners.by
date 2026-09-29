@@ -7,18 +7,18 @@ export default defineConfig({
   server: {
     proxy: {
       '/api': {
-        target: 'https://test.zkh.by',
+        target: 'https://178.172.137.114.sslip.io',
         changeOrigin: true,
         secure: true,
       },
       '/socket.io': {
-        target: 'https://test.zkh.by',
+        target: 'https://178.172.137.114.sslip.io',
         changeOrigin: true,
         secure: true,
         ws: true,
       },
       '/uploads': {
-        target: 'https://test.zkh.by',
+        target: 'https://178.172.137.114.sslip.io',
         changeOrigin: true,
         secure: true,
       },

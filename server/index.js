@@ -15,8 +15,11 @@ import crmRoutes from './src/routes/crm.js';
 import lookupRoutes from './src/routes/lookup.js';
 import telegramRoutes from './src/routes/telegram.js';
 import chatRoutes, { setChatBroadcasters } from './src/routes/chat.js';
+import internalRoutes from './src/routes/internal.js';
 import { attachChatSocket } from './src/services/chatSocket.js';
 import { startTelegramBot } from './src/services/telegramBot.js';
+import { bootstrapYandexDisk, scheduleYandexBackup, syncAllToYandexDisk } from './src/services/yandexBackup.js';
+import { ensureSalesRenderServices } from './src/services/salesrender.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -42,6 +45,7 @@ app.use('/api/crm', crmRoutes);
 app.use('/api/lookup', lookupRoutes);
 app.use('/api/telegram', telegramRoutes);
 app.use('/api/chat', chatRoutes);
+app.use('/api/internal', internalRoutes);
 
 app.use((err, _req, res, _next) => {
   console.error(err);
@@ -62,6 +66,17 @@ async function start() {
   startTelegramBot().catch((err) => {
     console.error('Telegram bot failed to start:', err);
   });
+
+  bootstrapYandexDisk().then((res) => {
+    if (res?.ok) {
+      // Initial backfill of existing docs/chats (async, non-blocking)
+      scheduleYandexBackup('initial-sync', () => syncAllToYandexDisk());
+    }
+  });
+
+  ensureSalesRenderServices()
+    .then(() => console.log('SalesRender services/tariffs ready'))
+    .catch((err) => console.warn('SalesRender services bootstrap:', err.message));
 
   // Passenger (Plesk) manages the port itself
   if (typeof PhusionPassenger !== 'undefined') {

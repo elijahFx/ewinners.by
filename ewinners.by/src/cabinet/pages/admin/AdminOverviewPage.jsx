@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { api } from '../../api'
+import { categoryLabel } from '../../statusLabels'
 
 function money(v) {
   return `${Number(v || 0).toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} BYN`
@@ -47,7 +48,7 @@ export default function AdminOverviewPage() {
                   <tr key={t.id}>
                     <td>{new Date(t.created_at).toLocaleString('ru-RU')}</td>
                     <td>{t.company_name}</td>
-                    <td>{t.category}</td>
+                    <td>{categoryLabel(t.category)}</td>
                     <td className={t.type === 'credit' ? 'cab-ok' : 'cab-bad'}>{money(t.amount)}</td>
                     <td>{money(t.balance_after)}</td>
                   </tr>

@@ -26,3 +26,6 @@ server.zip
 !.vscode/extensions.json
 .idea
 server.zip
+
+# Deployment helpers (local only)
+.deploy/

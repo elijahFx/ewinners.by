@@ -155,7 +155,18 @@ router.get('/tariffs', async (req, res) => {
        FROM tariffs t
        JOIN services s ON s.id = t.service_id
        LEFT JOIN projects p ON p.id = t.project_id
-       WHERE (t.company_id = :company_id OR t.company_id IS NULL)
+       WHERE (
+           -- личный прайс клиента
+           t.company_id = :company_id
+           -- общие цены и тарифы только его проектов
+           OR (
+             t.company_id IS NULL
+             AND (t.project_id IS NULL OR t.project_id IN (
+               SELECT id FROM projects WHERE company_id = :company_id
+             ))
+           )
+         )
+         AND t.valid_from <= CURDATE()
          AND (t.valid_to IS NULL OR t.valid_to >= CURDATE())
        ORDER BY s.name, (t.company_id IS NULL), (t.project_id IS NULL)`,
       { company_id: companyId },
@@ -242,7 +253,7 @@ router.post('/invoices', async (req, res) => {
       },
     );
 
-    await query(
+    const docInsert = await query(
       `INSERT INTO documents (company_id, type, number, title, amount, status, project_id, file_path)
        VALUES (:company_id, 'invoice', :number, :title, :amount, 'awaiting_payment', :project_id, :file_path)`,
       {
@@ -254,6 +265,16 @@ router.post('/invoices', async (req, res) => {
         file_path: filePath,
       },
     );
+
+    try {
+      const { queueDocumentBackup } = await import('../services/yandexBackup.js');
+      const docs = await query('SELECT * FROM documents WHERE id = :id LIMIT 1', {
+        id: docInsert.insertId,
+      });
+      queueDocumentBackup(docs[0]);
+    } catch (err) {
+      console.warn('[yandex-disk] invoice backup schedule failed:', err.message);
+    }
 
     await audit(req.user.id, 'create_invoice', 'invoice', result.insertId, { number, amount });
 

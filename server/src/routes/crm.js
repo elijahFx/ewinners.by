@@ -1,13 +1,88 @@
 import { Router } from 'express';
 import { query } from '../db.js';
-import { crmAuth } from '../middleware/auth.js';
+import { crmAuth, salesrenderWebhookAuth } from '../middleware/auth.js';
 import {
   debitBalance,
   getEffectiveTariff,
   notifyCompanyUsers,
+  tariffMissingReason,
 } from '../services/billing.js';
+import {
+  ensureSalesRenderServices,
+  processSalesRenderDelivered,
+  SR_STATUS_DELIVERED_ID,
+} from '../services/salesrender.js';
 
 const router = Router();
+
+/**
+ * SalesRender webhook: заказ перешёл в «Вручено» (status id=5).
+ * Auth: SALESRENDER_API_KEY или api_key компании.
+ * Только чтение payload — в CRM ничего не пишем.
+ */
+router.post('/salesrender/delivered', salesrenderWebhookAuth, async (req, res) => {
+  const payload = req.body || {};
+  const companyId = req.crmCompany.id;
+  const eventIdHint = String(
+    payload.eventId ||
+      payload.crm_event_id ||
+      (payload.orderId || payload.order_id || payload.id
+        ? `sr-delivered-${payload.orderId || payload.order_id || payload.id}`
+        : '') ||
+      '',
+  ).trim();
+
+  try {
+    await ensureSalesRenderServices();
+
+    const projectId = payload.projectId ? Number(payload.projectId) : null;
+    if (projectId) {
+      const projects = await query(
+        `SELECT * FROM projects WHERE id = :id AND company_id = :company_id`,
+        { id: projectId, company_id: companyId },
+      );
+      if (!projects[0]) throw new Error('Проект не найден');
+    }
+
+    const result = await processSalesRenderDelivered({
+      companyId,
+      payload,
+      projectId,
+      employeeName: payload.employeeName || payload.operator || null,
+      deliveredStatusId: Number(payload.deliveredStatusId || SR_STATUS_DELIVERED_ID),
+    });
+
+    await query(
+      `INSERT INTO crm_event_log (event_id, payload, status, error_message)
+       VALUES (:event_id, :payload, :status, :error_message)`,
+      {
+        event_id: eventIdHint || result.eventId || result.orderId || null,
+        payload: JSON.stringify({
+          source: 'salesrender',
+          authMode: req.salesrenderAuthMode || null,
+          ...payload,
+          companyId,
+        }),
+        status: result.duplicate ? 'duplicate' : result.skipped ? 'skipped' : 'processed',
+        error_message: result.reason || null,
+      },
+    );
+
+    res.json(result);
+  } catch (err) {
+    console.error('SalesRender webhook error:', err);
+    await query(
+      `INSERT INTO crm_event_log (event_id, payload, status, error_message)
+       VALUES (:event_id, :payload, 'error', :error_message)`,
+      {
+        event_id: eventIdHint || null,
+        payload: JSON.stringify({ source: 'salesrender', ...payload, companyId }),
+        error_message: err.message || String(err),
+      },
+    );
+    res.status(400).json({ error: err.message || 'Ошибка обработки SalesRender' });
+  }
+});
 
 router.use(crmAuth);
 
@@ -289,7 +364,11 @@ router.post('/events', async (req, res) => {
       projectId,
       serviceId: service.id,
     });
-    if (!tariff) throw new Error('Тариф не найден');
+    if (!tariff) {
+      throw new Error(
+        `Тариф для услуги «${service.name}» не найден. ${await tariffMissingReason({ companyId })}`,
+      );
+    }
 
     const unitPrice = Number(tariff.price);
     const amount = Number((unitPrice * quantity).toFixed(2));

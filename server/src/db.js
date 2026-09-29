@@ -10,6 +10,10 @@ export const config = {
   port: Number(process.env.PORT || 5000),
   jwtSecret: process.env.JWT_SECRET || 'ewinners-dev-secret',
   crmApiKey: process.env.CRM_API_KEY || 'ewinners-crm-api-key',
+  salesrenderApiKey: String(process.env.SALESRENDER_API_KEY || '').trim(),
+  salesrenderCompanyId: process.env.SALESRENDER_COMPANY_ID
+    ? Number(process.env.SALESRENDER_COMPANY_ID)
+    : null,
   company: {
     name:
       process.env.COMPANY_NAME ||
@@ -25,6 +29,8 @@ export const config = {
     iban: process.env.COMPANY_IBAN || '',
     bic: process.env.COMPANY_BIC || '',
     accountantPhone: process.env.COMPANY_ACCOUNTANT_PHONE || '+375 (25) 505-69-17',
+    directorName: process.env.COMPANY_DIRECTOR_NAME || 'Кастевич Владислав Павлович',
+    directorTitle: process.env.COMPANY_DIRECTOR_TITLE || 'Директор',
   },
   mail: {
     host: process.env.SMTP_HOST || '',

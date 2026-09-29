@@ -1,4 +1,4 @@
-const API_BASE = (import.meta.env.VITE_API_URL || 'https://test.zkh.by').replace(/\/$/, '');
+const API_BASE = (import.meta.env.VITE_API_URL || 'https://178.172.137.114.sslip.io').replace(/\/$/, '');
 
 function getToken() {
   return localStorage.getItem('ew_token') || '';

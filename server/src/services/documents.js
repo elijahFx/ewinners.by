@@ -2,6 +2,7 @@ import dayjs from 'dayjs';
 import { query } from '../db.js';
 import { generateActPdf } from './actPdf.js';
 import { generateDetailPdf } from './detailPdf.js';
+import { queueDocumentBackup } from './yandexBackup.js';
 
 export async function ensureActForInvoice(invoice, company) {
   const existing = await query(
@@ -10,7 +11,10 @@ export async function ensureActForInvoice(invoice, company) {
      LIMIT 1`,
     { company_id: invoice.company_id, number: invoice.number },
   );
-  if (existing[0]?.file_path) return existing[0];
+  if (existing[0]?.file_path) {
+    queueDocumentBackup(existing[0]);
+    return existing[0];
+  }
 
   const { filePath } = await generateActPdf({
     number: invoice.number,
@@ -33,6 +37,7 @@ export async function ensureActForInvoice(invoice, company) {
       },
     );
     const rows = await query('SELECT * FROM documents WHERE id = :id', { id: existing[0].id });
+    queueDocumentBackup(rows[0]);
     return rows[0];
   }
 
@@ -56,6 +61,7 @@ export async function ensureActForInvoice(invoice, company) {
   );
 
   const rows = await query('SELECT * FROM documents WHERE id = :id', { id: result.insertId });
+  queueDocumentBackup(rows[0]);
   return rows[0];
 }
 
@@ -165,6 +171,8 @@ export async function ensureDetailDocument(companyId, company, options = {}) {
     const rows = await query('SELECT * FROM documents WHERE id = :id', { id: result.insertId });
     document = rows[0];
   }
+
+  queueDocumentBackup(document);
 
   const emptyNote =
     mapped.length === 0

@@ -15,6 +15,7 @@ const statements = [
     min_balance DECIMAL(14,2) NOT NULL DEFAULT 0,
     notify_threshold DECIMAL(14,2) NOT NULL DEFAULT 500,
     low_balance_action ENUM('hard_stop','allow_credit','allow_debt') NOT NULL DEFAULT 'allow_credit',
+    buyout_enabled TINYINT(1) NOT NULL DEFAULT 0,
     manager_name VARCHAR(255) NULL,
     manager_phone VARCHAR(64) NULL,
     manager_email VARCHAR(255) NULL,
@@ -173,7 +174,7 @@ const statements = [
     id INT AUTO_INCREMENT PRIMARY KEY,
     event_id VARCHAR(128) NULL,
     payload JSON NOT NULL,
-    status ENUM('processed','duplicate','error') NOT NULL,
+    status ENUM('processed','duplicate','error','skipped') NOT NULL,
     error_message TEXT NULL,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
@@ -293,6 +294,12 @@ export async function migrate() {
   await ensureColumn('users', 'telegram_chat_id', 'VARCHAR(64) NULL AFTER notify_telegram');
   await ensureColumn('companies', 'api_key', 'VARCHAR(96) NULL UNIQUE AFTER manager_email');
   await ensureColumn('companies', 'api_key_created_at', 'DATETIME NULL AFTER api_key');
+  // Отдел выкупа: клиенту дополнительно списывается 1,50 BYN за выкупленный заказ.
+  await ensureColumn(
+    'companies',
+    'buyout_enabled',
+    'TINYINT(1) NOT NULL DEFAULT 0 AFTER api_key_created_at',
+  );
   await ensureColumn(
     'companies',
     'entity_type',
@@ -308,17 +315,38 @@ export async function migrate() {
     'operation_date',
     'DATE NULL AFTER status',
   );
+  await ensureColumn(
+    'bank_payments',
+    'external_id',
+    'VARCHAR(128) NULL AFTER reference',
+  );
+  await ensureColumn(
+    'bank_payments',
+    'provider',
+    "VARCHAR(32) NULL DEFAULT 'manual' AFTER external_id",
+  );
+  try {
+    await pool.execute(
+      `ALTER TABLE bank_payments ADD UNIQUE KEY uq_bank_payments_external (provider, external_id)`,
+    );
+  } catch {
+    /* index exists */
+  }
   await pool.execute(
     `UPDATE bank_payments
      SET operation_date = DATE(imported_at)
      WHERE operation_date IS NULL`,
   );
 
-  // Backfill membership from users.company_id
-  await pool.execute(
-    `INSERT IGNORE INTO user_companies (user_id, company_id, is_default)
-     SELECT id, company_id, 1 FROM users WHERE company_id IS NOT NULL`,
-  );
+  // Allow skipped/processed statuses in crm_event_log
+  try {
+    await pool.execute(
+      `ALTER TABLE crm_event_log
+       MODIFY COLUMN status ENUM('processed','duplicate','error','skipped') NOT NULL`,
+    );
+  } catch {
+    /* already updated or table missing */
+  }
 
   // Chat schema upgrades (existing installs)
   await ensureColumn(

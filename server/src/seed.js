@@ -15,6 +15,9 @@ async function seed() {
     ['message', 'Отправленное сообщение', 'шт'],
     ['meeting', 'Назначенная встреча', 'шт'],
     ['subscription', 'Абонентская плата', 'мес'],
+    ['sr_order_base', 'Заказ без апсейла/кроссейла (обзвон)', 'шт'],
+    ['sr_order_upsell', 'Заказ с апсейлом или кроссейлом (обзвон)', 'шт'],
+    ['sr_order_delivered', 'Выкупленный заказ (вручено)', 'шт'],
   ];
 
   for (const [code, name, unit] of services) {
@@ -61,6 +64,9 @@ async function seed() {
     ['message', 0.5, 'unit'],
     ['meeting', 8.0, 'unit'],
     ['subscription', 500.0, 'subscription'],
+    ['sr_order_base', 3.0, 'unit'],
+    ['sr_order_upsell', 5.0, 'unit'],
+    // sr_order_delivered (+1.5) — только индивидуальный тариф компании, без глобального
   ];
 
   for (const [code, price, billing_type] of defaults) {
