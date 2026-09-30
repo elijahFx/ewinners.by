@@ -10,13 +10,19 @@ import {
 import {
   ensureSalesRenderServices,
   processSalesRenderDelivered,
+  SR_STATUS_ACCEPTED_ID,
   SR_STATUS_DELIVERED_ID,
 } from '../services/salesrender.js';
 
 const router = Router();
 
 /**
- * SalesRender webhook: заказ перешёл в «Вручено» (status id=5).
+ * SalesRender webhook по заказу.
+ *
+ * «Принят» (status id=2)   → базовый тариф за обзвон (3 BYN / 5 BYN с апсейлом)
+ * «Вручено» (status id=5)  → доплата за выкуп (+1,50 BYN), если у клиента
+ *                            включён «Отдел выкупа»
+ *
  * Auth: SALESRENDER_API_KEY или api_key компании.
  * Только чтение payload — в CRM ничего не пишем.
  */
@@ -35,13 +41,35 @@ router.post('/salesrender/delivered', salesrenderWebhookAuth, async (req, res) =
   try {
     await ensureSalesRenderServices();
 
-    const projectId = payload.projectId ? Number(payload.projectId) : null;
-    if (projectId) {
+    // В SalesRender клиенты заведены как «Проекты», поэтому поле projectId в
+    // вебхуке обычно содержит ID проекта SalesRender, а не наш внутренний.
+    // Если именно этим значением нашли компанию — как наш projectId не трактуем.
+    const rawProjectId = payload.projectId ?? payload.project_id ?? null;
+    const matchedSalesRenderId = String(req.salesrenderMatchedId || '');
+    let projectId = null;
+
+    if (
+      rawProjectId != null &&
+      String(rawProjectId).trim() !== '' &&
+      String(rawProjectId) !== matchedSalesRenderId
+    ) {
       const projects = await query(
-        `SELECT * FROM projects WHERE id = :id AND company_id = :company_id`,
-        { id: projectId, company_id: companyId },
+        `SELECT id FROM projects WHERE id = :id AND company_id = :company_id`,
+        { id: Number(rawProjectId), company_id: companyId },
       );
-      if (!projects[0]) throw new Error('Проект не найден');
+      if (!projects[0]) throw new Error(`Проект ${rawProjectId} не найден у клиента`);
+      projectId = projects[0].id;
+    }
+
+    // Проект не указан — это не ошибка: проектов у клиента может быть несколько,
+    // баланс у него один, а нужный прайс подберётся по услуге
+    // (см. resolveTariffAndProject). Если проект ровно один — сразу его и пишем.
+    if (!projectId) {
+      const own = await query(
+        'SELECT id FROM projects WHERE company_id = :company_id ORDER BY id',
+        { company_id: companyId },
+      );
+      if (own.length === 1) projectId = own[0].id;
     }
 
     const result = await processSalesRenderDelivered({
@@ -49,6 +77,7 @@ router.post('/salesrender/delivered', salesrenderWebhookAuth, async (req, res) =
       payload,
       projectId,
       employeeName: payload.employeeName || payload.operator || null,
+      acceptedStatusId: Number(payload.acceptedStatusId || SR_STATUS_ACCEPTED_ID),
       deliveredStatusId: Number(payload.deliveredStatusId || SR_STATUS_DELIVERED_ID),
     });
 

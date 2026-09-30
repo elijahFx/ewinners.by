@@ -90,6 +90,10 @@ export default function CabinetLayout() {
     })
     socket.on('chat:unread-changed', refreshChatPending)
     socket.on('chat:conversation-updated', refreshChatPending)
+    // Баланс изменился — открытые страницы сами перечитают данные.
+    socket.on('balance:changed', () => {
+      window.dispatchEvent(new CustomEvent('ew-balance-changed'))
+    })
     return () => socket.disconnect()
   }, [user, refreshChatPending])
 
@@ -254,6 +258,14 @@ export default function CabinetLayout() {
             <NavLink key={to} to={to} end={end} className={({ isActive }) => (isActive ? 'active' : '')}>
               <Icon size={17} />
               <span>{label}</span>
+              {(to === '/cabinet/chat' || to === '/cabinet/admin/chat') && chatPending > 0 ? (
+                <em
+                  className="cab-chat-pending-badge cab-chat-pending-badge--nav"
+                  title="Непрочитанные сообщения"
+                >
+                  {chatPending > 99 ? '99+' : chatPending}
+                </em>
+              ) : null}
             </NavLink>
           ))}
         </nav>
@@ -266,11 +278,6 @@ export default function CabinetLayout() {
               ) : (
                 <span className="cab-user-avatar">{(user?.fullName || '?').slice(0, 1)}</span>
               )}
-              {chatPending > 0 ? (
-                <em className="cab-chat-pending-badge" title="Диалоги, требующие ответа">
-                  {chatPending > 99 ? '99+' : chatPending}
-                </em>
-              ) : null}
             </span>
             <span className="cab-user-meta">
               <strong>{user?.fullName}</strong>

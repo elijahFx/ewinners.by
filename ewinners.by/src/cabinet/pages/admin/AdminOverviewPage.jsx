@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { api } from '../../api'
 import { categoryLabel } from '../../statusLabels'
+import useLiveBalance from '../../useLiveBalance'
 
 function money(v) {
   return `${Number(v || 0).toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} BYN`
@@ -9,11 +10,20 @@ function money(v) {
 export default function AdminOverviewPage() {
   const [data, setData] = useState(null)
 
+  async function load() {
+    try {
+      setData(await api('/api/admin/overview'))
+    } catch (e) {
+      alert(e.message)
+    }
+  }
+
   useEffect(() => {
-    api('/api/admin/overview')
-      .then(setData)
-      .catch((e) => alert(e.message))
+    load()
   }, [])
+
+  // Списание или поступление — карточки обновляются сами.
+  useLiveBalance(load)
 
   if (!data) return <div className="cab-muted">Загрузка…</div>
 

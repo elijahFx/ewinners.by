@@ -1,4 +1,5 @@
 import { query, withTransaction } from '../db.js';
+import { emitBalanceChanged } from './balanceEvents.js';
 
 /**
  * Подбор действующего тарифа.
@@ -75,6 +76,37 @@ export async function tariffMissingReason({ companyId, at = new Date() }) {
     }
   }
   return 'Задайте тариф для проекта или общий тариф в разделе «Тарифы».';
+}
+
+/**
+ * Подбор тарифа вместе с проектом.
+ *
+ * Баланс у клиента один, поэтому проект влияет только на цену. Если проект не
+ * задан явно, ищем среди проектов клиента тот, в чьём прайсе есть эта услуга —
+ * так заказ с несколькими проектами у клиента не ломает списание.
+ */
+export async function resolveTariffAndProject({
+  companyId,
+  projectId = null,
+  serviceId,
+  at = new Date(),
+}) {
+  if (projectId) {
+    const tariff = await getEffectiveTariff({ companyId, projectId, serviceId, at });
+    if (tariff) return { tariff, projectId };
+  }
+
+  const projects = await query(
+    'SELECT id FROM projects WHERE company_id = :company_id ORDER BY id',
+    { company_id: companyId },
+  );
+  for (const p of projects) {
+    const tariff = await getEffectiveTariff({ companyId, projectId: p.id, serviceId, at });
+    if (tariff) return { tariff, projectId: p.id };
+  }
+
+  const fallback = await getEffectiveTariff({ companyId, projectId: null, serviceId, at });
+  return { tariff: fallback, projectId: projectId || null };
 }
 
 export async function applyBalanceChange({
@@ -157,6 +189,10 @@ export async function applyBalanceChange({
     await exec(`UPDATE companies SET status = 'suspended' WHERE id = ?`, [companyId]);
   }
 
+  // Сигнал фронту: баланс изменился. Событие уходит всем, кто видит этого
+  // клиента (он сам и сотрудники), и просто просит перечитать данные.
+  emitBalanceChanged({ companyId, balanceAfter, reason: category || type });
+
   return {
     transactionId: result.insertId,
     balanceBefore,
@@ -173,6 +209,8 @@ export async function debitBalance(params) {
 }
 
 export { notifyCompanyUsers } from './notify.js';
+
+export { emitBalanceChanged } from './balanceEvents.js';
 
 export async function audit(userId, action, entityType, entityId, details) {
   await query(

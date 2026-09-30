@@ -1,6 +1,7 @@
 import jwt from 'jsonwebtoken';
 import { Server } from 'socket.io';
 import { config, query } from '../db.js';
+import { setBalanceBroadcaster } from './balanceEvents.js';
 import { isStaffRole } from './chat.js';
 
 export function attachChatSocket(httpServer, { setChatBroadcasters }) {
@@ -102,6 +103,26 @@ export function attachChatSocket(httpServer, { setChatBroadcasters }) {
     onTyping(conversation, payload) {
       io.to(`conv:${conversation.id}`).emit('chat:typing', payload);
     },
+  });
+
+  // Изменение баланса: сообщаем сотрудникам и пользователям этого клиента,
+  // чтобы открытые страницы перечитали данные без перезагрузки.
+  setBalanceBroadcaster(async ({ companyId, balanceAfter }) => {
+    const payload = {
+      companyId,
+      balanceAfter,
+      at: new Date().toISOString(),
+    };
+
+    io.to('staff').emit('balance:changed', payload);
+
+    const rows = await query(
+      `SELECT id FROM users WHERE company_id = :company_id AND status <> 'blocked'`,
+      { company_id: companyId },
+    );
+    for (const row of rows) {
+      io.to(`user:${row.id}`).emit('balance:changed', payload);
+    }
   });
 
   return io;

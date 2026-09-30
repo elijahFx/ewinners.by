@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom'
 import { api } from '../api'
 import { useAuth } from '../AuthContext'
 import { statusLabel } from '../statusLabels'
+import useLiveBalance from '../useLiveBalance'
 
 function money(v) {
   return `${Number(v || 0).toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} BYN`
@@ -27,6 +28,9 @@ export default function DashboardPage() {
   useEffect(() => {
     load()
   }, [])
+
+  // Баланс поменялся на сервере — обновляем карточку без перезагрузки.
+  useLiveBalance(load)
 
   async function createInvoice(e) {
     e.preventDefault()

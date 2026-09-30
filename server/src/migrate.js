@@ -16,6 +16,7 @@ const statements = [
     notify_threshold DECIMAL(14,2) NOT NULL DEFAULT 500,
     low_balance_action ENUM('hard_stop','allow_credit','allow_debt') NOT NULL DEFAULT 'allow_credit',
     buyout_enabled TINYINT(1) NOT NULL DEFAULT 0,
+    salesrender_id VARCHAR(64) NULL,
     manager_name VARCHAR(255) NULL,
     manager_phone VARCHAR(64) NULL,
     manager_email VARCHAR(255) NULL,
@@ -300,6 +301,15 @@ export async function migrate() {
     'buyout_enabled',
     'TINYINT(1) NOT NULL DEFAULT 0 AFTER api_key_created_at',
   );
+  // ID клиента в SalesRender: по нему webhook находит компанию (приоритетнее названия).
+  await ensureColumn('companies', 'salesrender_id', 'VARCHAR(64) NULL AFTER buyout_enabled');
+  try {
+    await pool.execute(
+      'ALTER TABLE companies ADD UNIQUE KEY uq_companies_salesrender_id (salesrender_id)',
+    );
+  } catch {
+    /* индекс уже есть */
+  }
   await ensureColumn(
     'companies',
     'entity_type',

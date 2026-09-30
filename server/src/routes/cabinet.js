@@ -150,28 +150,43 @@ router.get('/tariffs', async (req, res) => {
     const companyId = companyScope(req);
     if (!companyId) return res.status(400).json({ error: 'Компания не назначена' });
 
+    // Клиент видит только то, что ему подключил админ: индивидуальный прайс или
+    // прайсы его проектов. Общие тарифы сайта не показываем.
+    // Логика совпадает с биллингом: если у клиента есть личный прайс, он полный
+    // и проектные цены для него не применяются.
+    const own = await query(
+      `SELECT t.id, t.price, t.billing_type, t.valid_from, t.company_id, t.project_id,
+              s.name AS service_name, s.code AS service_code, s.unit,
+              NULL AS project_name
+       FROM tariffs t
+       JOIN services s ON s.id = t.service_id
+       WHERE t.company_id = :company_id
+         AND t.valid_from <= CURDATE()
+         AND (t.valid_to IS NULL OR t.valid_to >= CURDATE())
+       ORDER BY s.name`,
+      { company_id: companyId },
+    );
+
+    if (own.length) {
+      return res.json({ items: own, scope: 'individual' });
+    }
+
     const rows = await query(
-      `SELECT t.*, s.name AS service_name, s.code AS service_code, s.unit, p.name AS project_name
+      `SELECT t.id, t.price, t.billing_type, t.valid_from, t.company_id, t.project_id,
+              s.name AS service_name, s.code AS service_code, s.unit,
+              p.name AS project_name
        FROM tariffs t
        JOIN services s ON s.id = t.service_id
        LEFT JOIN projects p ON p.id = t.project_id
-       WHERE (
-           -- личный прайс клиента
-           t.company_id = :company_id
-           -- общие цены и тарифы только его проектов
-           OR (
-             t.company_id IS NULL
-             AND (t.project_id IS NULL OR t.project_id IN (
-               SELECT id FROM projects WHERE company_id = :company_id
-             ))
-           )
-         )
+       WHERE t.company_id IS NULL
+         AND t.project_id IN (SELECT id FROM projects WHERE company_id = :company_id)
          AND t.valid_from <= CURDATE()
          AND (t.valid_to IS NULL OR t.valid_to >= CURDATE())
-       ORDER BY s.name, (t.company_id IS NULL), (t.project_id IS NULL)`,
+       ORDER BY p.name, s.name`,
       { company_id: companyId },
     );
-    res.json({ items: rows });
+
+    res.json({ items: rows, scope: 'project' });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Ошибка загрузки тарифов' });

@@ -146,10 +146,10 @@ router.post('/companies', requireRoles('admin'), async (req, res) => {
     const result = await query(
       `INSERT INTO companies
         (name, unp, legal_address, bank_name, iban, bic, credit_limit, min_balance, notify_threshold,
-         low_balance_action, buyout_enabled, manager_name, manager_phone, manager_email)
+         low_balance_action, buyout_enabled, salesrender_id, manager_name, manager_phone, manager_email)
        VALUES
         (:name, :unp, :legal_address, :bank_name, :iban, :bic, :credit_limit, :min_balance, :notify_threshold,
-         :low_balance_action, :buyout_enabled, :manager_name, :manager_phone, :manager_email)`,
+         :low_balance_action, :buyout_enabled, :salesrender_id, :manager_name, :manager_phone, :manager_email)`,
       {
         name,
         unp: req.body.unp || null,
@@ -162,6 +162,7 @@ router.post('/companies', requireRoles('admin'), async (req, res) => {
         notify_threshold: Number(req.body.notifyThreshold || 500),
         low_balance_action: req.body.lowBalanceAction || 'allow_credit',
         buyout_enabled: req.body.buyoutEnabled ? 1 : 0,
+        salesrender_id: String(req.body.salesrenderId ?? '').trim() || null,
         manager_name: req.body.managerName || null,
         manager_phone: req.body.managerPhone || null,
         manager_email: req.body.managerEmail || null,
@@ -172,6 +173,9 @@ router.post('/companies', requireRoles('admin'), async (req, res) => {
     res.status(201).json({ company: rows[0] });
   } catch (err) {
     console.error(err);
+    if (err.code === 'ER_DUP_ENTRY') {
+      return res.status(409).json({ error: 'Такой SalesRender ID уже привязан к другому клиенту' });
+    }
     res.status(500).json({ error: 'Не удалось создать компанию' });
   }
 });
@@ -193,6 +197,7 @@ router.patch('/companies/:id', requireRoles('admin'), async (req, res) => {
          notify_threshold = COALESCE(:notify_threshold, notify_threshold),
          low_balance_action = COALESCE(:low_balance_action, low_balance_action),
          buyout_enabled = COALESCE(:buyout_enabled, buyout_enabled),
+         salesrender_id = IF(:salesrender_set, :salesrender_id, salesrender_id),
          manager_name = COALESCE(:manager_name, manager_name),
          manager_phone = COALESCE(:manager_phone, manager_phone),
          manager_email = COALESCE(:manager_email, manager_email)
@@ -213,6 +218,12 @@ router.patch('/companies/:id', requireRoles('admin'), async (req, res) => {
         // Галочка «Отдел выкупа»: +1,50 BYN за выкупленный заказ.
         buyout_enabled:
           req.body.buyoutEnabled === undefined ? null : req.body.buyoutEnabled ? 1 : 0,
+        // Пустая строка очищает SalesRender ID.
+        salesrender_set: req.body.salesrenderId === undefined ? 0 : 1,
+        salesrender_id:
+          req.body.salesrenderId === undefined
+            ? null
+            : String(req.body.salesrenderId).trim() || null,
         manager_name: req.body.managerName ?? null,
         manager_phone: req.body.managerPhone ?? null,
         manager_email: req.body.managerEmail ?? null,
@@ -223,6 +234,9 @@ router.patch('/companies/:id', requireRoles('admin'), async (req, res) => {
     res.json({ company: rows[0] });
   } catch (err) {
     console.error(err);
+    if (err.code === 'ER_DUP_ENTRY') {
+      return res.status(409).json({ error: 'Такой SalesRender ID уже привязан к другому клиенту' });
+    }
     res.status(500).json({ error: 'Не удалось обновить компанию' });
   }
 });

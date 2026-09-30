@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { Building2, Check } from 'lucide-react'
 import { api } from '../api'
 import { useAuth } from '../AuthContext'
+import useLiveBalance from '../useLiveBalance'
 
 const ENTITY_LABELS = {
   ooo: 'ООО / юрлицо',
@@ -23,6 +24,9 @@ export default function CompanyPage() {
   useEffect(() => {
     load().catch((e) => setError(e.message))
   }, [])
+
+  // Баланс и статус компании обновляются без перезагрузки.
+  useLiveBalance(() => load().catch(() => {}))
 
   async function activate(id) {
     setBusy(true)

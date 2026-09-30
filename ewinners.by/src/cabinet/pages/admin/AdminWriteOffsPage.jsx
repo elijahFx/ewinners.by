@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { api } from '../../api'
 import { categoryLabel } from '../../statusLabels'
 import Skeleton from '../../ui/Skeleton'
+import useLiveBalance from '../../useLiveBalance'
 
 function localDate(d) {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
@@ -50,6 +51,7 @@ export default function AdminWriteOffsPage() {
   const [loading, setLoading] = useState(true)
   const [loaded, setLoaded] = useState(false)
   const [error, setError] = useState('')
+  const [reloadKey, setReloadKey] = useState(0)
 
   useEffect(() => {
     const timer = setTimeout(() => setDebouncedQ(filters.q.trim()), 300)
@@ -97,7 +99,10 @@ export default function AdminWriteOffsPage() {
     return () => {
       cancelled = true
     }
-  }, [query])
+  }, [query, reloadKey])
+
+  // Новое списание — список и итоги обновляются сами.
+  useLiveBalance(() => setReloadKey((k) => k + 1))
 
   const showSkeleton = loading && !loaded
   const debitTotal = Number(totals?.debit_total || 0)

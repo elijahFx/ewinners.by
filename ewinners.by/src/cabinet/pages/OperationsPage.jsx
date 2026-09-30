@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { api, apiDownload } from '../api'
+import useLiveBalance from '../useLiveBalance'
 
 function money(v) {
   return `${Number(v || 0).toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} BYN`
@@ -24,6 +25,9 @@ export default function OperationsPage() {
   useEffect(() => {
     load()
   }, [type])
+
+  // Новые списания/поступления появляются без перезагрузки страницы.
+  useLiveBalance(load)
 
   return (
     <>

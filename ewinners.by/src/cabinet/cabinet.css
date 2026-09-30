@@ -208,6 +208,20 @@ a.cab-brand:hover img {
   box-shadow: 0 4px 10px rgba(225, 29, 72, 0.35);
 }
 
+/* Значок непрочитанных на пункте меню «Чат» */
+.cab-chat-pending-badge--nav {
+  position: static;
+  margin-left: auto;
+  height: 18px;
+  min-width: 18px;
+  padding: 0 5px;
+  border-color: transparent;
+  box-shadow: none;
+  font-size: 0.66rem;
+  line-height: 18px;
+  flex-shrink: 0;
+}
+
 .cab-user-meta {
   min-width: 0;
   display: grid;

@@ -11,11 +11,14 @@
 import { query } from '../db.js';
 import {
   debitBalance,
-  getEffectiveTariff,
   notifyCompanyUsers,
+  resolveTariffAndProject,
   tariffMissingReason,
 } from './billing.js';
 
+// Статусы SalesRender, по которым списываем.
+// «Принят» — базовый тариф за обзвон, «Вручено» — доплата за выкуп.
+export const SR_STATUS_ACCEPTED_ID = 2;
 export const SR_STATUS_DELIVERED_ID = 5;
 export const SR_SERVICE_BASE = 'sr_order_base';
 export const SR_SERVICE_UPSELL = 'sr_order_upsell';
@@ -70,36 +73,74 @@ function fieldUri(entry) {
 }
 
 /** Find field by slug in assorted SalesRender / custom webhook shapes. */
+// Наборы полей заказа в разных формах payload.
+const FIELD_GROUPS = [
+  'fields',
+  'orderFields',
+  'order_fields',
+  'booleanFields',
+  'stringFields',
+  'integerFields',
+  'floatFields',
+  'enumFields',
+  'dateTimeFields',
+  'uriFields',
+  'emailFields',
+  'phoneFields',
+  'humanNameFields',
+  'addressFields',
+  'imageFields',
+  'fileFields',
+  'userFields',
+];
+
+/**
+ * Все места, где могут лежать поля заказа.
+ *
+ * Вебхук SalesRender присылает GraphQL-вид, где данные обёрнуты в `data`,
+ * а внутри заказа ещё раз `data` — то есть путь `data.data.booleanFields`.
+ * Поэтому корни перебираем на разной глубине, а не только верхний уровень.
+ */
+function fieldNests(payload) {
+  const src = unwrapSalesRenderPayload(payload);
+  if (!src || typeof src !== 'object') return [];
+
+  const roots = [
+    src,
+    src.data,
+    src.data?.data,
+    src.order,
+    src.order?.data,
+    src.order?.data?.data,
+    src.entity,
+    src.variables,
+  ].filter((r) => r && typeof r === 'object');
+
+  const nests = [];
+  for (const root of roots) {
+    nests.push(root);
+    for (const group of FIELD_GROUPS) {
+      if (root[group]) nests.push(root[group]);
+    }
+  }
+  return nests;
+}
+
 export function pickOrderField(payload, slug) {
   const src = unwrapSalesRenderPayload(payload);
   if (!src || typeof src !== 'object') return null;
-  const keys = [slug, slug.toLowerCase()];
 
-  for (const key of keys) {
+  for (const key of [slug, slug.toLowerCase()]) {
     if (src[key] != null) return src[key];
   }
 
-  const nests = [
-    src.fields,
-    src.orderFields,
-    src.order_fields,
-    src.data?.fields,
-    src.data?.booleanFields,
-    src.data?.stringFields,
-    src.data?.integerFields,
-    src.order?.data?.booleanFields,
-    src.order?.fields,
-    src.order,
-    src.data,
-    src.entity,
-    src.variables,
-  ].filter(Boolean);
-
-  for (const nest of nests) {
-    if (!Array.isArray(nest) && nest?.[slug] != null) return nest[slug];
-    if (!Array.isArray(nest) && nest?.[slug.toLowerCase()] != null) return nest[slug.toLowerCase()];
-    if (Array.isArray(nest)) {
-      const hit = nest.find((f) => fieldUri(f).toLowerCase() === slug.toLowerCase());
+  const target = slug.toLowerCase();
+  for (const nest of fieldNests(payload)) {
+    if (!Array.isArray(nest)) {
+      if (nest[slug] != null) return nest[slug];
+      if (nest[target] != null) return nest[target];
+    } else {
+      const hit = nest.find((f) => fieldUri(f).toLowerCase() === target);
       if (hit) return hit.value ?? hit.val ?? hit.checked ?? hit;
     }
   }
@@ -141,6 +182,9 @@ export function extractStatusName(payload) {
       src.status_name ||
       dig(src, ['status', 'name']) ||
       dig(src, ['order', 'status', 'name']) ||
+      // GraphQL-вид вебхука SalesRender
+      dig(payload, ['data', 'status', 'name']) ||
+      dig(payload, ['data', 'statusName']) ||
       (typeof src.status === 'string' ? src.status : '') ||
       '',
   ).trim();
@@ -164,17 +208,45 @@ export function extractCompanyNameFromPayload(payload) {
   return '';
 }
 
+/**
+ * Сопоставление статуса заказа.
+ *
+ * Сначала по id — он надёжнее. По названию сверяем только если id не пришёл,
+ * и строго: иначе «Ждет вручения» совпало бы с «Вручено».
+ */
+function statusMatches(payload, { id, namePart }) {
+  const gotId = extractStatusId(payload);
+  if (gotId != null && String(gotId).trim() !== '') {
+    return Number(gotId) === Number(id);
+  }
+  const name = extractStatusName(payload).trim().toLowerCase();
+  if (!name) return false;
+  return name === namePart || name.startsWith(namePart);
+}
+
+/** «Принят» — по нему списывается базовый тариф за обзвон. */
+export function isAcceptedStatus(payload, { statusId = SR_STATUS_ACCEPTED_ID } = {}) {
+  return statusMatches(payload, { id: statusId, namePart: 'принят' });
+}
+
+/** «Вручено» — по нему списывается доплата за выкуп (если включён отдел выкупа). */
 export function isDeliveredStatus(payload, { statusId = SR_STATUS_DELIVERED_ID } = {}) {
-  const id = extractStatusId(payload);
-  if (id != null && Number(id) === Number(statusId)) return true;
-  const name = extractStatusName(payload).toLowerCase();
-  if (name.includes('вручен')) return true;
-  return false;
+  return statusMatches(payload, { id: statusId, namePart: 'вручено' });
+}
+
+// Названия полей «апсейл» и «кроссейл» в SalesRender у разных клиентов
+// отличаются, поэтому пробуем несколько вариантов. `apsejl` в список НЕ входит:
+// в CRM пользователя это архивный дубль поля «Апсейл».
+const CROSS_SLUGS = ['krossejl', 'crosssell', 'cross_sell', 'cross-sell', 'cross'];
+const UPSELL_SLUGS = ['apseil', 'upsell', 'up_sell', 'up-sell', 'apsell'];
+
+function anyFlag(payload, slugs) {
+  return slugs.some((slug) => isTruthyFlag(pickOrderField(payload, slug)));
 }
 
 export function resolveCallAmountFlags(payload) {
-  const cross = isTruthyFlag(pickOrderField(payload, 'krossejl'));
-  const upsell = isTruthyFlag(pickOrderField(payload, 'apseil'));
+  const cross = anyFlag(payload, CROSS_SLUGS);
+  const upsell = anyFlag(payload, UPSELL_SLUGS);
   const hasExtra = cross || upsell;
   return {
     cross,
@@ -221,7 +293,12 @@ async function debitService({
 }
 
 /**
- * Process SalesRender "delivered" webhook for one company.
+ * Process SalesRender order webhook for one company.
+ *
+ * «Принят»  → базовый тариф за обзвон (3 BYN, либо 5 BYN с апсейлом/кроссейлом)
+ * «Вручено» → доплата за выкуп (+1,50 BYN), только если у клиента включён
+ *             «Отдел выкупа»
+ *
  * Idempotent per order via crm_event_id.
  */
 export async function processSalesRenderDelivered({
@@ -229,16 +306,18 @@ export async function processSalesRenderDelivered({
   payload,
   projectId = null,
   employeeName = null,
+  acceptedStatusId = SR_STATUS_ACCEPTED_ID,
   deliveredStatusId = SR_STATUS_DELIVERED_ID,
 }) {
-  if (!isDeliveredStatus(payload, { statusId: deliveredStatusId })) {
-    return {
-      ok: true,
-      skipped: true,
-      reason: 'status_not_delivered',
-      statusId: extractStatusId(payload),
-      statusName: extractStatusName(payload),
-    };
+  const statusId = extractStatusId(payload);
+  const statusName = extractStatusName(payload);
+  const flags = resolveCallAmountFlags(payload);
+
+  const accepted = isAcceptedStatus(payload, { statusId: acceptedStatusId });
+  const delivered = isDeliveredStatus(payload, { statusId: deliveredStatusId });
+
+  if (!accepted && !delivered) {
+    return { ok: true, skipped: true, reason: 'status_not_billable', statusId, statusName };
   }
 
   const orderId = extractOrderId(payload);
@@ -246,94 +325,109 @@ export async function processSalesRenderDelivered({
     throw new Error('В вебхуке нет orderId');
   }
 
-  const baseEventId = `sr-delivered-${orderId}`;
-  const dup = await query(
-    `SELECT id FROM transactions WHERE crm_event_id = :event_id LIMIT 1`,
-    { event_id: baseEventId },
-  );
-  if (dup.length) {
-    return { ok: true, duplicate: true, eventId: baseEventId, orderId: String(orderId) };
-  }
-
-  const flags = resolveCallAmountFlags(payload);
-  const baseService = await loadService(flags.serviceCode);
-  if (!baseService) {
-    throw new Error(`Услуга ${flags.serviceCode} не найдена — выполните seed/migrate`);
-  }
-
-  const baseTariff = await getEffectiveTariff({
-    companyId,
-    projectId,
-    serviceId: baseService.id,
-  });
-  if (!baseTariff) {
-    throw new Error(
-      `Тариф для услуги «${baseService.name}» не найден. ${await tariffMissingReason({ companyId })}`,
-    );
-  }
-
-  const crossLabel = [
-    flags.cross ? 'кроссейл' : null,
-    flags.upsell ? 'апсейл' : null,
-  ]
-    .filter(Boolean)
-    .join('+');
-
-  const baseComment =
-    `SalesRender заказ #${orderId}: обзвон` +
-    (crossLabel ? ` (${crossLabel})` : ' (без апс/кросс)');
-
   const charges = [];
-  const baseTx = await debitService({
-    companyId,
-    projectId,
-    service: baseService,
-    tariff: baseTariff,
-    eventId: baseEventId,
-    employeeName,
-    comment: baseComment,
-    orderId: String(orderId),
-  });
-  charges.push(baseTx);
+  let usedProjectId = projectId;
 
-  const deliveredService = await loadService(SR_SERVICE_DELIVERED);
-  if (deliveredService) {
-    // Отдел выкупа включается галочкой у клиента: тогда к базовой цене
-    // добавляется тариф за выкупленный заказ (обычно 1,50 BYN).
-    const companyRows = await query(
-      'SELECT buyout_enabled FROM companies WHERE id = :id LIMIT 1',
-      { id: companyId },
+  // 1. «Принят» — базовый тариф за обзвон.
+  if (accepted) {
+    const baseEventId = `sr-accepted-${orderId}`;
+    // Заказы, списанные до перехода на «Принят», лежат под старым id —
+    // учитываем его, чтобы не списать повторно.
+    const legacyEventId = `sr-delivered-${orderId}`;
+    const dup = await query(
+      `SELECT id FROM transactions WHERE crm_event_id IN (:new_id, :legacy_id) LIMIT 1`,
+      { new_id: baseEventId, legacy_id: legacyEventId },
     );
-    const buyoutEnabled = Number(companyRows[0]?.buyout_enabled || 0) === 1;
 
-    const addOn = buyoutEnabled
-      ? await getEffectiveTariff({ companyId, projectId, serviceId: deliveredService.id })
-      : null;
+    if (dup.length) {
+      charges.push({ skipped: true, duplicate: true, eventId: baseEventId });
+    } else {
+      const baseService = await loadService(flags.serviceCode);
+      if (!baseService) {
+        throw new Error(`Услуга ${flags.serviceCode} не найдена — выполните seed/migrate`);
+      }
 
-    if (buyoutEnabled && !addOn) {
-      console.warn(
-        `[salesrender] у компании ${companyId} включён отдел выкупа, но тариф ${SR_SERVICE_DELIVERED} не задан — доплата не списана`,
+      // Баланс у клиента один, проект влияет только на цену — подбираем его по услуге.
+      const resolved = await resolveTariffAndProject({
+        companyId,
+        projectId,
+        serviceId: baseService.id,
+      });
+      if (!resolved.tariff) {
+        throw new Error(
+          `Тариф для услуги «${baseService.name}» не найден. ${await tariffMissingReason({ companyId })}`,
+        );
+      }
+      usedProjectId = resolved.projectId;
+
+      const crossLabel = [flags.cross ? 'кроссейл' : null, flags.upsell ? 'апсейл' : null]
+        .filter(Boolean)
+        .join('+');
+
+      charges.push(
+        await debitService({
+          companyId,
+          projectId: resolved.projectId,
+          service: baseService,
+          tariff: resolved.tariff,
+          eventId: baseEventId,
+          employeeName,
+          comment:
+            `SalesRender заказ #${orderId}: обзвон` +
+            (crossLabel ? ` (${crossLabel})` : ' (без апс/кросс)'),
+          orderId: String(orderId),
+        }),
       );
     }
+  }
 
-    if (addOn) {
-      const addEventId = `sr-delivered-bonus-${orderId}`;
-      const addDup = await query(
-        `SELECT id FROM transactions WHERE crm_event_id = :event_id LIMIT 1`,
-        { event_id: addEventId },
+  // 2. «Вручено» — доплата за выкупленный заказ.
+  if (delivered) {
+    const deliveredService = await loadService(SR_SERVICE_DELIVERED);
+    if (deliveredService) {
+      const companyRows = await query(
+        'SELECT buyout_enabled FROM companies WHERE id = :id LIMIT 1',
+        { id: companyId },
       );
-      if (!addDup.length) {
-        const addTx = await debitService({
-          companyId,
-          projectId,
-          service: deliveredService,
-          tariff: addOn,
-          eventId: addEventId,
-          employeeName,
-          comment: `SalesRender заказ #${orderId}: выкуп (вручено)`,
-          orderId: String(orderId),
-        });
-        charges.push(addTx);
+      const buyoutEnabled = Number(companyRows[0]?.buyout_enabled || 0) === 1;
+
+      if (buyoutEnabled) {
+        const addEventId = `sr-delivered-bonus-${orderId}`;
+        const addDup = await query(
+          `SELECT id FROM transactions WHERE crm_event_id = :event_id LIMIT 1`,
+          { event_id: addEventId },
+        );
+
+        if (addDup.length) {
+          charges.push({ skipped: true, duplicate: true, eventId: addEventId });
+        } else {
+          const addOn = (
+            await resolveTariffAndProject({
+              companyId,
+              projectId: usedProjectId,
+              serviceId: deliveredService.id,
+            })
+          ).tariff;
+
+          if (addOn) {
+            charges.push(
+              await debitService({
+                companyId,
+                projectId: usedProjectId,
+                service: deliveredService,
+                tariff: addOn,
+                eventId: addEventId,
+                employeeName,
+                comment: `SalesRender заказ #${orderId}: выкуп (вручено)`,
+                orderId: String(orderId),
+              }),
+            );
+          } else {
+            console.warn(
+              `[salesrender] у компании ${companyId} включён отдел выкупа, но тариф ${SR_SERVICE_DELIVERED} не задан — доплата не списана`,
+            );
+          }
+        }
       }
     }
   }
@@ -354,6 +448,8 @@ export async function processSalesRenderDelivered({
   return {
     ok: true,
     orderId: String(orderId),
+    statusId,
+    statusName,
     flags,
     charges,
     total,

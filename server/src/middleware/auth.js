@@ -177,6 +177,114 @@ async function findCompanyByName(name) {
   return { company: null, matches };
 }
 
+const COMPANY_COLUMNS = `id, name, unp, status, balance, credit_limit, notify_threshold,
+        low_balance_action, api_key, api_key_created_at, buyout_enabled, salesrender_id`;
+
+/**
+ * ID проекта клиента в SalesRender из тела вебхука.
+ *
+ * В SalesRender клиенты заведены как «Проекты» (ID 87 — ИП Рудак и т.д.),
+ * поэтому ID берём из полей проекта.
+ *
+ * Осознанно НЕ читаем `companyId` / `company_id`: исторически это внутренний id
+ * E-Winners. Их обрабатываем отдельно — сначала как SalesRender ID, потом как
+ * внутренний (см. resolveWebhookCompany).
+ */
+function extractSalesRenderId(payload) {
+  if (!payload || typeof payload !== 'object') return '';
+  const candidates = [
+    payload.salesrenderProjectId,
+    payload.salesrender_project_id,
+    payload.salesrenderId,
+    payload.salesrender_id,
+    payload.srProjectId,
+    payload.sr_project_id,
+    payload.srId,
+    payload.sr_id,
+    // плоский вид
+    payload.project?.salesrenderId,
+    payload.project?.salesrender_id,
+    payload.project?.id,
+    payload.project?._id,
+    payload.clientId,
+    payload.client_id,
+    payload.organizationId,
+    payload.organization_id,
+    payload.orgId,
+    payload.org_id,
+    payload.company?.id,
+    payload.client?.id,
+    payload.organization?.id,
+    // GraphQL-вид вебхука SalesRender: { data: { project: { id } } }
+    payload.data?.project?.salesrenderId,
+    payload.data?.project?.salesrender_id,
+    payload.data?.project?.id,
+    payload.data?.project?._id,
+    payload.data?.salesrenderId,
+    payload.data?.salesrender_id,
+    payload.data?.clientId,
+    payload.data?.organizationId,
+    payload.data?.company?.id,
+    payload.data?.client?.id,
+    payload.data?.organization?.id,
+  ];
+  for (const c of candidates) {
+    if (c === null || c === undefined) continue;
+    const s = String(c).trim();
+    if (s) return s;
+  }
+  return '';
+}
+
+/**
+ * Значение, которое в вебхуке означает ID проекта SalesRender.
+ * Нужно, чтобы не спутать его с внутренним projectId E-Winners.
+ */
+function extractSalesRenderProjectValue(payload) {
+  if (!payload || typeof payload !== 'object') return '';
+  const candidates = [
+    payload.projectId,
+    payload.project_id,
+    payload.data?.projectId,
+    payload.data?.project_id,
+  ];
+  for (const c of candidates) {
+    if (c === null || c === undefined) continue;
+    const s = String(c).trim();
+    if (s) return s;
+  }
+  return '';
+}
+
+async function findCompanyBySalesRenderId(id) {
+  const raw = String(id ?? '').trim();
+  if (!raw) return null;
+  const rows = await query(
+    `SELECT ${COMPANY_COLUMNS} FROM companies WHERE salesrender_id = :sr LIMIT 1`,
+    { sr: raw },
+  );
+  return rows[0] || null;
+}
+
+async function findCompanyByApiKey(apiKey) {
+  const raw = String(apiKey ?? '').trim();
+  if (!raw) return null;
+  const rows = await query(
+    `SELECT ${COMPANY_COLUMNS} FROM companies WHERE api_key = :api_key LIMIT 1`,
+    { api_key: raw },
+  );
+  return rows[0] || null;
+}
+
+async function findCompanyById(id) {
+  const raw = Number(id);
+  if (!Number.isFinite(raw) || raw <= 0) return null;
+  const rows = await query(`SELECT ${COMPANY_COLUMNS} FROM companies WHERE id = :id LIMIT 1`, {
+    id: raw,
+  });
+  return rows[0] || null;
+}
+
 export async function salesrenderWebhookAuth(req, res, next) {
   try {
     const key = String(
@@ -193,25 +301,85 @@ export async function salesrenderWebhookAuth(req, res, next) {
     const payload = req.body || {};
     let company = null;
     let authMode = null;
+    // Каким значением SalesRender ID нашли компанию — чтобы не спутать его
+    // с внутренним projectId E-Winners в роутере.
+    let matchedSalesRenderId = null;
 
     if (srKey && key === srKey) {
       authMode = 'salesrender';
 
+      const srId = extractSalesRenderId(payload);
+      const srProjectValue = extractSalesRenderProjectValue(payload);
       const companyName = extractCompanyName(payload);
       const companyApiKey = String(
         payload.companyApiKey || payload.company_api_key || '',
       ).trim();
-      const companyId =
+      const legacyCompanyId =
         payload.companyId != null
-          ? Number(payload.companyId)
+          ? payload.companyId
           : payload.company_id != null
-            ? Number(payload.company_id)
+            ? payload.company_id
             : null;
 
-      if (companyName) {
+      // 1. Главный способ — по ID проекта SalesRender (в SR клиенты = проекты).
+      if (srId) {
+        company = await findCompanyBySalesRenderId(srId);
+        if (!company) {
+          return res.status(404).json({
+            error:
+              `Клиент с ID проекта SalesRender «${srId}» не найден. ` +
+              'Укажите этот ID в карточке клиента: Клиенты → ID проекта SalesRender.',
+          });
+        }
+        authMode = 'salesrender_project_id';
+        matchedSalesRenderId = srId;
+      }
+
+      // 1б. Поле projectId: сначала пробуем как ID проекта SalesRender.
+      if (!company && srProjectValue) {
+        company = await findCompanyBySalesRenderId(srProjectValue);
+        if (company) {
+          authMode = 'salesrender_project_id';
+          matchedSalesRenderId = srProjectValue;
+        }
+      }
+
+      // 2. Ключ компании.
+      if (!company && companyApiKey) {
+        company = await findCompanyByApiKey(companyApiKey);
+        if (company) authMode = 'company_api_key';
+      }
+
+      // 3. Поле companyId: сначала как SalesRender ID, затем как внутренний id.
+      if (!company && legacyCompanyId != null && legacyCompanyId !== '') {
+        company = await findCompanyBySalesRenderId(legacyCompanyId);
+        if (company) {
+          authMode = 'salesrender_project_id';
+          matchedSalesRenderId = String(legacyCompanyId);
+        } else {
+          company = await findCompanyById(legacyCompanyId);
+          if (company) authMode = 'company_id';
+        }
+      }
+
+      // 4. Запасной id из .env.
+      if (!company && (config.salesrenderCompanyId || process.env.SALESRENDER_COMPANY_ID)) {
+        const fallbackId =
+          config.salesrenderCompanyId || Number(process.env.SALESRENDER_COMPANY_ID);
+        company = await findCompanyById(fallbackId);
+        if (company) authMode = 'env_fallback';
+      }
+
+      // 5. Последняя попытка — по названию (для старых клиентов без SalesRender ID).
+      if (!company && companyName) {
         const found = await findCompanyByName(companyName);
         if (found.company) {
           company = found.company;
+          authMode = 'company_name';
+          console.warn(
+            `[salesrender] компания «${companyName}» найдена по названию (id=${company.id}). ` +
+              'Проставьте ей SalesRender ID, чтобы поиск шёл по ID.',
+          );
         } else if (found.matches.length > 1) {
           return res.status(409).json({
             error: `Найдено несколько компаний по названию «${companyName}»`,
@@ -222,36 +390,20 @@ export async function salesrenderWebhookAuth(req, res, next) {
             error: `Компания с названием «${companyName}» не найдена в E-Winners`,
           });
         }
-      } else if (companyApiKey) {
-        const rows = await query(
-          `SELECT id, name, unp, status, balance, credit_limit, notify_threshold, low_balance_action,
-                  api_key, api_key_created_at
-           FROM companies WHERE api_key = :api_key LIMIT 1`,
-          { api_key: companyApiKey },
-        );
-        company = rows[0] || null;
-      } else if (companyId) {
-        const rows = await query(
-          `SELECT id, name, unp, status, balance, credit_limit, notify_threshold, low_balance_action,
-                  api_key, api_key_created_at
-           FROM companies WHERE id = :id LIMIT 1`,
-          { id: companyId },
-        );
-        company = rows[0] || null;
-      } else if (config.salesrenderCompanyId || process.env.SALESRENDER_COMPANY_ID) {
-        const fallbackId =
-          config.salesrenderCompanyId || Number(process.env.SALESRENDER_COMPANY_ID);
-        const rows = await query(
-          `SELECT id, name, unp, status, balance, credit_limit, notify_threshold, low_balance_action,
-                  api_key, api_key_created_at
-           FROM companies WHERE id = :id LIMIT 1`,
-          { id: fallbackId },
-        );
-        company = rows[0] || null;
-      } else {
+      }
+
+      if (!company) {
+        // projectId пришёл, но ни одному клиенту не соответствует.
+        if (srProjectValue) {
+          return res.status(404).json({
+            error:
+              `Клиент с ID проекта SalesRender «${srProjectValue}» не найден. ` +
+              'Укажите этот ID в карточке клиента: Клиенты → ID проекта в SalesRender.',
+          });
+        }
         return res.status(400).json({
           error:
-            'Укажите companyName (название организации) в теле webhook — по нему ищем компанию в E-Winners',
+            'В теле webhook нет ID проекта SalesRender. Передайте поле projectId (или project.id / salesrenderId) — по нему ищем клиента в E-Winners.',
         });
       }
     } else {
@@ -274,6 +426,7 @@ export async function salesrenderWebhookAuth(req, res, next) {
 
     req.crmCompany = company;
     req.salesrenderAuthMode = authMode;
+    req.salesrenderMatchedId = matchedSalesRenderId;
     next();
   } catch (err) {
     console.error(err);

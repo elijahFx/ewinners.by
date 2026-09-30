@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { api } from '../../api'
+import useLiveBalance from '../../useLiveBalance'
 
 export default function AdminBalancePage() {
   const [companies, setCompanies] = useState([])
@@ -10,11 +11,21 @@ export default function AdminBalancePage() {
     comment: '',
   })
 
+  async function load() {
+    try {
+      const d = await api('/api/admin/companies')
+      setCompanies(d.items)
+    } catch (e) {
+      alert(e.message)
+    }
+  }
+
   useEffect(() => {
-    api('/api/admin/companies')
-      .then((d) => setCompanies(d.items))
-      .catch((e) => alert(e.message))
+    load()
   }, [])
+
+  // Балансы в списке обновляются без перезагрузки.
+  useLiveBalance(load)
 
   async function submit(e) {
     e.preventDefault()

@@ -1,9 +1,11 @@
 import { useEffect, useState } from 'react'
 import { api } from '../../api'
 import { statusLabel } from '../../statusLabels'
+import useLiveBalance from '../../useLiveBalance'
 
 const empty = {
   name: '',
+  salesrenderId: '',
   unp: '',
   legalAddress: '',
   bankName: '',
@@ -16,6 +18,68 @@ const empty = {
   managerPhone: '',
   managerEmail: '',
   buyoutEnabled: false,
+}
+
+/** SalesRender ID можно поправить прямо в списке — по нему ищется клиент при списании. */
+function SalesRenderIdCell({ company, onSave }) {
+  const [editing, setEditing] = useState(false)
+  const [draft, setDraft] = useState(company.salesrender_id || '')
+
+  useEffect(() => {
+    if (!editing) setDraft(company.salesrender_id || '')
+  }, [company.salesrender_id, editing])
+
+  async function commit() {
+    const next = draft.trim()
+    setEditing(false)
+    if (next === (company.salesrender_id || '')) return
+    try {
+      await onSave(company, next)
+    } catch (err) {
+      alert(err.message)
+      setDraft(company.salesrender_id || '')
+    }
+  }
+
+  if (!editing) {
+    return (
+      <button
+        type="button"
+        onClick={() => setEditing(true)}
+        title="Нажмите, чтобы изменить ID проекта в SalesRender"
+        style={{
+          background: company.salesrender_id ? 'rgba(37, 141, 255, 0.18)' : 'transparent',
+          border: company.salesrender_id ? '1px solid rgba(143, 210, 255, 0.35)' : '1px dashed #2a5f8f',
+          borderRadius: 8,
+          color: company.salesrender_id ? '#8fd2ff' : '#9db8d4',
+          cursor: 'pointer',
+          fontSize: '0.8rem',
+          fontWeight: 700,
+          padding: '3px 10px',
+        }}
+      >
+        {company.salesrender_id || 'задать'}
+      </button>
+    )
+  }
+
+  return (
+    <input
+      autoFocus
+      value={draft}
+      placeholder="например, 87"
+      onChange={(e) => setDraft(e.target.value)}
+      onBlur={commit}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter') commit()
+        if (e.key === 'Escape') {
+          setDraft(company.salesrender_id || '')
+          setEditing(false)
+        }
+      }}
+      style={{ maxWidth: 160 }}
+    />
+  )
 }
 
 export default function AdminCompaniesPage() {
@@ -34,6 +98,9 @@ export default function AdminCompaniesPage() {
   useEffect(() => {
     load().catch((e) => alert(e.message))
   }, [])
+
+  // Балансы клиентов в таблице обновляются без перезагрузки.
+  useLiveBalance(() => load().catch(() => {}))
 
   useEffect(() => {
     const unp = String(form.unp || '').replace(/\D/g, '')
@@ -142,12 +209,28 @@ export default function AdminCompaniesPage() {
     }
   }
 
+  // SalesRender ID можно поправить прямо в списке — по нему ищется клиент при списании.
+  async function saveSalesRenderId(company, value) {
+    const res = await api(`/api/admin/companies/${company.id}`, {
+      method: 'PATCH',
+      body: { salesrenderId: value },
+    })
+    setItems((prev) =>
+      prev.map((c) =>
+        c.id === company.id ? { ...c, salesrender_id: res.company?.salesrender_id ?? null } : c,
+      ),
+    )
+  }
+
   return (
     <>
       <div className="cab-page-head">
         <div>
           <h1>Клиенты (юрлица)</h1>
-          <p>Введите УНП — название и адрес подтянутся из реестра. По IBAN определится банк и БИК.</p>
+          <p>
+            Введите УНП — название и адрес подтянутся из реестра. По IBAN определится банк и БИК.
+            ID проекта в SalesRender можно изменить прямо в таблице.
+          </p>
         </div>
       </div>
 
@@ -173,6 +256,18 @@ export default function AdminCompaniesPage() {
                 onChange={(e) => setForm({ ...form, name: e.target.value })}
                 placeholder="Заполнится по УНП"
               />
+            </label>
+            <label style={{ gridColumn: '1 / -1' }}>
+              ID проекта в SalesRender (обязательно)
+              <input
+                required
+                value={form.salesrenderId}
+                onChange={(e) => setForm({ ...form, salesrenderId: e.target.value })}
+                placeholder="например, 87"
+              />
+              <small className="cab-muted">
+                В SalesRender клиенты заведены как проекты: Проекты → ID. По нему находится клиент при списании — важнее названия.
+              </small>
             </label>
             <label style={{ gridColumn: '1 / -1' }}>
               Адрес
@@ -259,6 +354,7 @@ export default function AdminCompaniesPage() {
                 <tr>
                   <th>ID</th>
                   <th>Компания</th>
+                  <th>ID проекта в SR</th>
                   <th>УНП</th>
                   <th>Баланс</th>
                   <th>Лимит</th>
@@ -272,6 +368,9 @@ export default function AdminCompaniesPage() {
                   <tr key={c.id}>
                     <td>{c.id}</td>
                     <td>{c.name}</td>
+                    <td>
+                      <SalesRenderIdCell company={c} onSave={saveSalesRenderId} />
+                    </td>
                     <td>{c.unp || '—'}</td>
                     <td>{Number(c.balance).toFixed(2)}</td>
                     <td>{Number(c.credit_limit).toFixed(2)}</td>
