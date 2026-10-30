@@ -176,6 +176,19 @@ function apiPath(suffix) {
 }
 
 function extractErrorMessage(payload, status) {
+  // 5xx от MTBank — их внутренняя ошибка, а не наш запрос
+  if (status >= 500) {
+    return (
+      `MTBank вернул ошибку ${status} на своей стороне. ` +
+      'Проверьте статус Open API в кабинете MTBank — запрос до банка дошёл.'
+    );
+  }
+  if (status === 404) {
+    return (
+      'MTBank не нашёл ресурс (404). Обычно это значит, что согласие ' +
+      'MTBANK_CONSENT_ID истекло или отозвано — создайте новое в кабинете MTBank.'
+    );
+  }
   if (!payload || typeof payload !== 'object') return `MTBank HTTP ${status}`;
   return (
     payload.message ||
@@ -725,7 +738,7 @@ function cacheSet(key, value) {
   statementCache.set(key, { at: Date.now(), value });
 }
 
-export async function fetchMtbankStatement({ from, to, refresh = false } = {}) {
+export async function fetchMtbankStatement({ from, to, refresh = false, iban } = {}) {
   const cfg = mtbankConfig();
   if (!cfg.configured) {
     return {
@@ -769,13 +782,26 @@ export async function fetchMtbankStatement({ from, to, refresh = false } = {}) {
     };
   }
 
-  const cacheKey = `${cfg.consentId}|${cfg.accountId || cfg.accountIban || ''}|${dateFrom}|${dateTo}`;
+  // IBAN входит в ключ кэша: иначе выписка одного счёта на минуту подменит
+  // выписку другого счёта того же согласия.
+  const requestedIban = String(iban || '').replace(/\s+/g, '').toUpperCase();
+  const cacheKey = `${cfg.consentId}|${cfg.accountId || cfg.accountIban || ''}|${requestedIban}|${dateFrom}|${dateTo}`;
   if (!refresh) {
     const cached = cacheGet(cacheKey);
     if (cached) return cached;
   }
 
-  const accountId = await resolveAccountId();
+  // Если админ выбрал конкретный счёт — берём его, иначе счёт по умолчанию
+  let accountId;
+  if (iban) {
+    const wanted = String(iban).replace(/\s+/g, '').toUpperCase();
+    const accounts = await listAccounts();
+    const found = accounts.find((a) => String(a.iban || '').replace(/\s+/g, '').toUpperCase() === wanted);
+    if (!found) throw new Error(`MTBank: счёт ${wanted} не найден в согласии`);
+    accountId = found.id;
+  } else {
+    accountId = await resolveAccountId();
+  }
   let accountMeta = {
     id: accountId,
     iban: cfg.accountIban || null,
@@ -889,4 +915,78 @@ export function amountsMatch(a, b, tolerance = 0.01) {
     return Number(String(v).replace(/\s/g, '').replace(',', '.'));
   };
   return Math.abs(parse(a) - parse(b)) <= tolerance;
+}
+
+/**
+ * Выписка сразу по всем счетам компании.
+ *
+ * Документация MTBank предполагает одно согласие, авторизованное на несколько
+ * счетов, поэтому обходим их списком и склеиваем движения. Каждое движение
+ * помечаем IBAN счёта, чтобы в интерфейсе можно было фильтровать и считать
+ * обороты отдельно по каждому.
+ */
+export async function fetchAllAccountsStatement({ from, to, refresh = false } = {}) {
+  const accounts = await listAccounts();
+  if (!accounts.length) {
+    throw new Error('MTBank: согласие не даёт доступа ни к одному счёту. Авторизуйте счета в кабинете MTBank.');
+  }
+
+  const results = [];
+  const movements = [];
+
+  for (const account of accounts) {
+    try {
+      const [balanceResult, txsResult] = await Promise.allSettled([
+        fetchAccountBalance(account.id),
+        fetchViaTransactions(account.id, String(from).slice(0, 10), String(to).slice(0, 10)),
+      ]);
+
+      const balance =
+        balanceResult.status === 'fulfilled' && balanceResult.value
+          ? balanceResult.value.amount
+          : null;
+
+      let rows = [];
+      if (txsResult.status === 'fulfilled') {
+        rows = txsResult.value || [];
+      } else {
+        // Резервный путь через асинхронные выписки
+        rows = (await fetchViaStatements(account.id, from, to)) || [];
+      }
+
+      const mapped = rows.map((row, i) => ({
+        ...normalizeMtbankMovement(row, i),
+        accountIban: account.iban,
+        accountName: account.name || null,
+      }));
+      movements.push(...mapped);
+
+      const income = mapped
+        .filter((m) => m.direction === 'income')
+        .reduce((s, m) => s + Number(m.amount || 0), 0);
+      const expense = mapped
+        .filter((m) => m.direction === 'expense')
+        .reduce((s, m) => s + Number(m.amount || 0), 0);
+
+      results.push({
+        ...account,
+        balance,
+        income,
+        expense,
+        count: mapped.length,
+      });
+    } catch (err) {
+      results.push({ ...account, balance: null, income: 0, expense: 0, count: 0, error: err.message });
+    }
+  }
+
+  return {
+    configured: true,
+    ready: true,
+    provider: 'mtbank',
+    accounts: results,
+    movements,
+    fetchedAt: new Date().toISOString(),
+    period: { from, to },
+  };
 }

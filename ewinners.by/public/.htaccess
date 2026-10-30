@@ -1,0 +1,17 @@
+# SPA-фолбэк: маршруты вида /cabinet, /hr, /target отдаём на index.html,
+# дальше их разбирает приложение. Без этого прямые ссылки дают 404.
+#
+# Только правила mod_rewrite — никаких Options и AddType: на Plesk они
+# иногда запрещены, и тогда весь файл ломает сайт ошибкой 500.
+<IfModule mod_rewrite.c>
+  RewriteEngine On
+  RewriteBase /
+
+  # Существующие файлы и каталоги отдаём как есть
+  RewriteCond %{REQUEST_FILENAME} -f [OR]
+  RewriteCond %{REQUEST_FILENAME} -d
+  RewriteRule ^ - [L]
+
+  # Всё остальное — на index.html
+  RewriteRule . /index.html [L]
+</IfModule>

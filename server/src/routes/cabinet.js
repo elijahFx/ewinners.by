@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { generateInvoicePdf } from '../services/invoicePdf.js';
+import { buildXlsx } from '../services/xlsx.js';
 import { audit } from '../services/billing.js';
 import { ensureActForInvoice, ensureDetailDocument } from '../services/documents.js';
 import { notifyChannelsStatus, sendDocumentByEmail } from '../services/notify.js';
@@ -123,22 +124,58 @@ router.get('/transactions', async (req, res) => {
       sql += ' AND t.type = :type';
       params.type = req.query.type;
     }
+    // источник операции: ручную вносил сотрудник, автоматическую создала система
+    if (req.query.source === 'manual') {
+      sql += ' AND t.created_by IS NOT NULL';
+    } else if (req.query.source === 'auto') {
+      sql += ' AND t.created_by IS NULL';
+    }
     if (req.query.projectId) {
       sql += ' AND t.project_id = :project_id';
       params.project_id = Number(req.query.projectId);
     }
+    // Сравниваем по календарным дням: иначе «to = 30.09» отсекло бы весь
+    // последний день, потому что 30.09 00:00 меньше любой операции за 30.09.
     if (req.query.from) {
-      sql += ' AND t.created_at >= :from';
-      params.from = req.query.from;
+      sql += ' AND DATE(t.created_at) >= :from_date';
+      params.from_date = String(req.query.from).slice(0, 10);
     }
     if (req.query.to) {
-      sql += ' AND t.created_at <= :to';
-      params.to = req.query.to;
+      sql += ' AND DATE(t.created_at) <= :to_date';
+      params.to_date = String(req.query.to).slice(0, 10);
     }
-    sql += ' ORDER BY t.created_at DESC LIMIT 500';
+    // Поиск по услуге, проекту, сотруднику и комментарию.
+    if (req.query.q) {
+      sql += ` AND (
+          s.name LIKE :q OR p.name LIKE :q OR t.comment LIKE :q
+          OR t.employee_name LIKE :q OR t.category LIKE :q
+        )`;
+      params.q = `%${String(req.query.q).trim()}%`;
+    }
+
+    const limit = Math.min(Math.max(Number(req.query.limit) || 500, 1), 2000);
+    sql += ` ORDER BY t.created_at DESC LIMIT ${limit}`;
 
     const rows = await query(sql, params);
-    res.json({ items: rows });
+
+    // Итоги за выбранный период считаем по всей выборке, а не по обрезанной.
+    const totals = rows.reduce(
+      (acc, t) => {
+        const amount = Number(t.amount || 0);
+        if (t.type === 'credit') {
+          acc.credit_total += amount;
+          acc.credit_count += 1;
+        } else {
+          acc.debit_total += amount;
+          acc.debit_count += 1;
+        }
+        return acc;
+      },
+      { credit_total: 0, credit_count: 0, debit_total: 0, debit_count: 0 },
+    );
+    totals.total_count = rows.length;
+
+    res.json({ items: rows, totals, truncated: rows.length >= limit });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Ошибка загрузки операций' });
@@ -242,8 +279,7 @@ router.post('/invoices', async (req, res) => {
     const seq = Number(countRows[0].c) + 1;
     const number = `EW-${dayjs().format('YYYYMM')}-${companyId}-${String(seq).padStart(4, '0')}`;
     const purpose =
-      req.body.purpose ||
-      `Пополнение авансового баланса по счёту ${number}. УНП плательщика ${company.unp || '—'}. В назначении платежа обязательно указать номер счёта ${number}.`;
+      req.body.purpose || `Пополнение авансового баланса по счёту ${number}.`;
 
     const createdAt = dayjs().format('DD.MM.YYYY');
     const { filePath } = await generateInvoicePdf({
@@ -705,15 +741,36 @@ router.get('/export/transactions.csv', async (req, res) => {
   try {
     const companyId = companyScope(req);
     if (!companyId) return res.status(400).json({ error: 'Компания не назначена' });
+
+    const params = { company_id: companyId };
+    let where = 'WHERE t.company_id = :company_id';
+    if (req.query.type === 'credit' || req.query.type === 'debit') {
+      where += ' AND t.type = :type';
+      params.type = req.query.type;
+    }
+    if (req.query.source === 'manual') {
+      where += ' AND t.created_by IS NOT NULL';
+    } else if (req.query.source === 'auto') {
+      where += ' AND t.created_by IS NULL';
+    }
+    if (req.query.from) {
+      where += ' AND DATE(t.created_at) >= :from_date';
+      params.from_date = String(req.query.from).slice(0, 10);
+    }
+    if (req.query.to) {
+      where += ' AND DATE(t.created_at) <= :to_date';
+      params.to_date = String(req.query.to).slice(0, 10);
+    }
+
     const rows = await query(
       `SELECT t.created_at, t.type, t.category, t.amount, t.quantity, t.unit_price,
               t.employee_name, t.comment, t.balance_after, s.name AS service_name, p.name AS project_name
        FROM transactions t
        LEFT JOIN services s ON s.id = t.service_id
        LEFT JOIN projects p ON p.id = t.project_id
-       WHERE t.company_id = :company_id
+       ${where}
        ORDER BY t.created_at DESC`,
-      { company_id: companyId },
+      params,
     );
 
     // Force Excel to treat values as text (avoids ##### for narrow date columns
@@ -763,6 +820,71 @@ router.get('/export/transactions.csv', async (req, res) => {
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Ошибка экспорта' });
+  }
+});
+
+/**
+ * Выгрузка списаний в Excel по заказам SalesRender.
+ *
+ * Колонки повторяют таблицу, которой пользуется бухгалтерия:
+ * номер заказа у клиента, ФИО, телефон, кроссейл, апсейл, сумма корзины.
+ */
+router.get('/export/write-offs.xlsx', async (req, res) => {
+  try {
+    const companyId = companyScope(req);
+    if (!companyId) return res.status(400).json({ error: 'Компания не назначена' });
+
+    const params = { company_id: companyId };
+    let where = "WHERE t.company_id = :company_id AND t.type = 'debit'";
+    if (req.query.from) {
+      where += ' AND DATE(t.created_at) >= :from_date';
+      params.from_date = String(req.query.from).slice(0, 10);
+    }
+    if (req.query.to) {
+      where += ' AND DATE(t.created_at) <= :to_date';
+      params.to_date = String(req.query.to).slice(0, 10);
+    }
+
+    const rows = await query(
+      `SELECT t.created_at, t.client_order_number, t.customer_name, t.customer_phone,
+              t.cart_total, t.is_cross, t.is_upsell, t.amount
+         FROM transactions t
+         ${where}
+        ORDER BY t.created_at ASC, t.id ASC`,
+      params,
+    );
+
+    const buf = buildXlsx({
+      sheetName: 'Списания',
+      columns: [
+        { key: 'clientOrderNumber', title: 'Номер заказа у клиента', width: 24 },
+        { key: 'customerName', title: 'ФИО (имя)', width: 32 },
+        { key: 'customerPhone', title: 'Телефон (исходный)', width: 20 },
+        { key: 'isCross', title: 'Кроссейл', width: 12 },
+        { key: 'isUpsell', title: 'Апсейл', width: 12 },
+        { key: 'cartTotal', title: 'Корзина (сумма)', width: 16 },
+      ],
+      rows: rows.map((r) => ({
+        clientOrderNumber: r.client_order_number || '',
+        customerName: r.customer_name || '',
+        customerPhone: r.customer_phone || '',
+        // Как в привычной таблице: галочка стоит — true, не стоит — пусто.
+        isCross: Number(r.is_cross) ? true : null,
+        isUpsell: Number(r.is_upsell) ? true : null,
+        cartTotal: r.cart_total == null ? null : Number(r.cart_total),
+      })),
+    });
+
+    const stamp = new Date().toISOString().slice(0, 10);
+    res.setHeader(
+      'Content-Type',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    );
+    res.setHeader('Content-Disposition', `attachment; filename="write-offs-${stamp}.xlsx"`);
+    res.send(buf);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Ошибка выгрузки в Excel' });
   }
 });
 

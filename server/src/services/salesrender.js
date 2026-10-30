@@ -9,9 +9,9 @@
  * Never writes/updates anything in SalesRender.
  */
 import { query } from '../db.js';
+import { isOrderTooOld } from './billingCutoff.js';
 import {
   debitBalance,
-  notifyCompanyUsers,
   resolveTariffAndProject,
   tariffMissingReason,
 } from './billing.js';
@@ -148,6 +148,97 @@ export function pickOrderField(payload, slug) {
   return null;
 }
 
+/** Конкретная группа полей заказа (stringFields, phoneFields и т.д.). */
+function orderFieldGroup(payload, group) {
+  const src = unwrapSalesRenderPayload(payload);
+  if (!src || typeof src !== 'object') return [];
+  const roots = [src, src.data, src.data?.data, src.order, src.order?.data].filter(
+    (r) => r && typeof r === 'object',
+  );
+  for (const root of roots) {
+    if (Array.isArray(root[group])) return root[group];
+  }
+  return [];
+}
+
+/** Значение поля по слагу внутри группы. */
+function fieldValueBySlug(payload, group, slug) {
+  const target = String(slug).toLowerCase();
+  for (const item of orderFieldGroup(payload, group)) {
+    const field = item?.field || {};
+    const key = String(
+      field.name || field.slug || field.uri || field.code || field.id || '',
+    ).toLowerCase();
+    if (key === target) return item.value ?? item.val ?? item.checked ?? null;
+  }
+  return null;
+}
+
+/** Номер заказа у клиента — из строкового поля nomer_zakaza_u_klienta. */
+export function extractClientOrderNumber(payload) {
+  const direct = pickOrderField(payload, 'nomer_zakaza_u_klienta');
+  const value = direct ?? fieldValueBySlug(payload, 'stringFields', 'nomer_zakaza_u_klienta');
+  const s = value == null ? '' : String(value).trim();
+  return s || null;
+}
+
+/** ФИО получателя — из humanNameFields (или строкового поля name). */
+export function extractCustomerName(payload) {
+  for (const item of orderFieldGroup(payload, 'humanNameFields')) {
+    const v = item?.value;
+    if (v && typeof v === 'object') {
+      const parts = [v.lastName, v.firstName, v.middleName].filter((p) => p && String(p).trim());
+      if (parts.length) return parts.map((p) => String(p).trim()).join(' ');
+    }
+    if (typeof v === 'string' && v.trim()) return v.trim();
+  }
+  const fallback = pickOrderField(payload, 'name');
+  const s = fallback == null ? '' : String(fallback).trim();
+  return s || null;
+}
+
+/** Телефон получателя — из phoneFields. */
+export function extractCustomerPhone(payload) {
+  for (const item of orderFieldGroup(payload, 'phoneFields')) {
+    const v = item?.value;
+    if (v && typeof v === 'object') {
+      const phone = v.international || v.national || v.number || v.phone || v.value;
+      if (phone && String(phone).trim()) return String(phone).trim();
+    }
+    if (typeof v === 'string' && v.trim()) return v.trim();
+  }
+  return null;
+}
+
+/** Сумма корзины заказа. */
+export function extractCartTotal(payload) {
+  const src = unwrapSalesRenderPayload(payload);
+  if (!src || typeof src !== 'object') return null;
+  const roots = [src.data?.data, src.data, src.order?.data, src].filter(
+    (r) => r && typeof r === 'object',
+  );
+  for (const root of roots) {
+    const raw = root.cart?.pricing?.price ?? root.cart?.pricing?.total;
+    if (raw == null || raw === '') continue;
+    const n = Number(String(raw).replace(/\s/g, '').replace(',', '.'));
+    if (Number.isFinite(n)) return n;
+  }
+  return null;
+}
+
+/** Дополнительные данные заказа для документов и экспорта. */
+export function extractOrderDetails(payload) {
+  const flags = resolveCallAmountFlags(payload);
+  return {
+    clientOrderNumber: extractClientOrderNumber(payload),
+    customerName: extractCustomerName(payload),
+    customerPhone: extractCustomerPhone(payload),
+    cartTotal: extractCartTotal(payload),
+    isCross: flags.cross ? 1 : 0,
+    isUpsell: flags.upsell ? 1 : 0,
+  };
+}
+
 export function extractOrderId(payload) {
   const src = unwrapSalesRenderPayload(payload);
   return (
@@ -264,6 +355,25 @@ async function loadService(code) {
   return rows[0] || null;
 }
 
+/**
+ * Вставка операции упала на уникальном ключе crm_event_id — значит, её уже провели.
+ * Такое бывает при гонке: два вебхука по одному заказу пришли одновременно и оба
+ * прошли проверку «ещё не списано». Списывать повторно нельзя, ошибку отдавать тоже.
+ */
+function isDuplicateKeyError(err) {
+  const code = err?.code ?? err?.errno;
+  return code === 'ER_DUP_ENTRY' || code === 1062 || /Duplicate entry/i.test(String(err?.message || ''));
+}
+
+async function debitOnceOrDuplicate(params) {
+  try {
+    return { charge: await debitService(params) };
+  } catch (err) {
+    if (isDuplicateKeyError(err)) return { duplicate: true };
+    throw err;
+  }
+}
+
 async function debitService({
   companyId,
   projectId,
@@ -273,6 +383,7 @@ async function debitService({
   employeeName,
   comment,
   orderId,
+  details = null,
 }) {
   const unitPrice = Number(tariff.price);
   const amount = Number(unitPrice.toFixed(2));
@@ -288,6 +399,12 @@ async function debitService({
     crmEventId: eventId,
     employeeName,
     comment,
+    clientOrderNumber: details?.clientOrderNumber ?? null,
+    customerName: details?.customerName ?? null,
+    customerPhone: details?.customerPhone ?? null,
+    cartTotal: details?.cartTotal ?? null,
+    isCross: details?.isCross ?? 0,
+    isUpsell: details?.isUpsell ?? 0,
   });
   return { ...result, amount, serviceCode: service.code, orderId };
 }
@@ -324,6 +441,26 @@ export async function processSalesRenderDelivered({
   if (!orderId) {
     throw new Error('В вебхуке нет orderId');
   }
+
+  // Слишком старые заказы не списываем: до определённой даты ewinners.by
+  // ещё не работал в полную силу, и такие заказы остались висеть с тех времён.
+  const age = await isOrderTooOld({ payload, orderId });
+  if (age.tooOld) {
+    console.log(
+      `[salesrender] заказ ${orderId} от ${age.created.toISOString().slice(0, 10)} старше ${age.cutoff.toISOString().slice(0, 10)} — списание пропущено (дата из ${age.source})`,
+    );
+    return {
+      ok: true,
+      skipped: true,
+      reason: 'order_too_old',
+      orderId: String(orderId),
+      orderCreatedAt: age.created.toISOString(),
+      billingStartDate: age.cutoff.toISOString(),
+    };
+  }
+
+  // Детали заказа сохраняем в операцию — по ним строится выгрузка в Excel.
+  const details = extractOrderDetails(payload);
 
   const charges = [];
   let usedProjectId = projectId;
@@ -364,20 +501,20 @@ export async function processSalesRenderDelivered({
         .filter(Boolean)
         .join('+');
 
-      charges.push(
-        await debitService({
-          companyId,
-          projectId: resolved.projectId,
-          service: baseService,
-          tariff: resolved.tariff,
-          eventId: baseEventId,
-          employeeName,
-          comment:
-            `SalesRender заказ #${orderId}: обзвон` +
-            (crossLabel ? ` (${crossLabel})` : ' (без апс/кросс)'),
-          orderId: String(orderId),
-        }),
-      );
+      const base = await debitOnceOrDuplicate({
+        companyId,
+        projectId: resolved.projectId,
+        service: baseService,
+        tariff: resolved.tariff,
+        eventId: baseEventId,
+        employeeName,
+        comment:
+          `SalesRender заказ #${orderId}: обзвон` +
+          (crossLabel ? ` (${crossLabel})` : ' (без апс/кросс)'),
+        orderId: String(orderId),
+        details,
+      });
+      charges.push(base.duplicate ? { skipped: true, duplicate: true, eventId: baseEventId } : base.charge);
     }
   }
 
@@ -410,18 +547,18 @@ export async function processSalesRenderDelivered({
           ).tariff;
 
           if (addOn) {
-            charges.push(
-              await debitService({
-                companyId,
-                projectId: usedProjectId,
-                service: deliveredService,
-                tariff: addOn,
-                eventId: addEventId,
-                employeeName,
-                comment: `SalesRender заказ #${orderId}: выкуп (вручено)`,
-                orderId: String(orderId),
-              }),
-            );
+            const add = await debitOnceOrDuplicate({
+              companyId,
+              projectId: usedProjectId,
+              service: deliveredService,
+              tariff: addOn,
+              eventId: addEventId,
+              employeeName,
+              comment: `SalesRender заказ #${orderId}: выкуп (вручено)`,
+              orderId: String(orderId),
+              details,
+            });
+            charges.push(add.duplicate ? { skipped: true, duplicate: true, eventId: addEventId } : add.charge);
           } else {
             console.warn(
               `[salesrender] у компании ${companyId} включён отдел выкупа, но тариф ${SR_SERVICE_DELIVERED} не задан — доплата не списана`,
@@ -432,17 +569,10 @@ export async function processSalesRenderDelivered({
     }
   }
 
-  const updated = await query(
-    'SELECT balance, notify_threshold FROM companies WHERE id = :id',
-    { id: companyId },
-  );
-  if (updated[0] && Number(updated[0].balance) <= Number(updated[0].notify_threshold)) {
-    await notifyCompanyUsers(
-      companyId,
-      'Низкий баланс',
-      `Текущий баланс: ${Number(updated[0].balance).toFixed(2)} BYN`,
-    );
-  }
+  const updated = await query('SELECT balance FROM companies WHERE id = :id', { id: companyId });
+  // Уведомление о низком балансе здесь больше не шлём: иначе на каждое
+  // списание уходило отдельное письмо. Порог отслеживает debitBalance,
+  // а раз в день приходит одна сводка (sendDailyBalanceDigests).
 
   const total = charges.reduce((s, c) => s + Number(c.amount || 0), 0);
   return {

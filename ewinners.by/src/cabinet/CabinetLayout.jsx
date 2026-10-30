@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
-import { NavLink, Outlet, useNavigate } from 'react-router-dom'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { io } from 'socket.io-client'
 import {
   LayoutDashboard,
@@ -8,6 +8,7 @@ import {
   Wallet,
   Bell,
   Building2,
+  Mail,
   LogOut,
   Shield,
   Users,
@@ -17,12 +18,14 @@ import {
   KeyRound,
   ShieldCheck,
   Landmark,
-  MessageCircle,
   Tags,
   ArrowDownRight,
+  Scale,
 } from 'lucide-react'
 import { useAuth } from './AuthContext'
 import { api, mediaUrl } from './api'
+import { DIRECTIONS, DIRECTION_STORAGE_KEY, DirectionContext } from './DirectionContext'
+import AvatarEditorModal from './ui/AvatarEditorModal'
 import './cabinet.css'
 
 const SIDEBAR_MIN = 180
@@ -45,10 +48,57 @@ function readSidebarWidth() {
 export default function CabinetLayout() {
   const { user, company, companies, switchCompany, logout, refresh } = useAuth()
   const navigate = useNavigate()
-  const isStaff = user && ['admin', 'accountant'].includes(user.role)
+  const location = useLocation()
+  const [mailUnread, setMailUnread] = useState(0)
+  const isHr = user?.role === 'hr'
+  const isStaff = user && ['admin', 'accountant', 'hr'].includes(user.role)
+  const [direction, setDirection] = useState(() => {
+    // При открытии страницы направления адрес важнее сохранённого выбора.
+    const match = location.pathname.match(/^\/cabinet\/admin\/direction\/([^/]+)/)
+    const code = match?.[1]?.toLowerCase()
+    if (DIRECTIONS.some((d) => d.code === code)) return code
+    try {
+      return localStorage.getItem(DIRECTION_STORAGE_KEY) || 'hr'
+    } catch {
+      return 'hr'
+    }
+  })
+
+  // Единая точка смены направления: сайдбар, рабочее место и «Банкинг»
+  // читают одно и то же состояние.
+  const applyDirection = useCallback((code) => {
+    setDirection(code)
+    try {
+      localStorage.setItem(DIRECTION_STORAGE_KEY, code)
+    } catch {
+      /* ignore */
+    }
+  }, [])
+
+  // Текущее направление берём из адреса: страница рабочего места — это
+  // /cabinet/admin/direction/:code, и сайдбар должен показывать то же самое.
+  const routeDirection = (() => {
+    const match = location.pathname.match(/^\/cabinet\/admin\/direction\/([^/]+)/)
+    const code = match?.[1]?.toLowerCase()
+    return DIRECTIONS.some((d) => d.code === code) ? code : null
+  })()
+
+  useEffect(() => {
+    if (routeDirection) applyDirection(routeDirection)
+  }, [routeDirection, applyDirection])
+
+  function pickDirection(code) {
+    applyDirection(code)
+    // Смена направления на рабочем месте сразу открывает его страницу:
+    // иначе заголовок, счёт и обороты остались бы от прежнего направления.
+    if (isHr || location.pathname.startsWith('/cabinet/admin/direction')) {
+      navigate(`/cabinet/admin/direction/${code}`)
+    }
+  }
   const [sidebarWidth, setSidebarWidth] = useState(readSidebarWidth)
   const [resizing, setResizing] = useState(false)
   const [chatPending, setChatPending] = useState(0)
+  const [avatarOpen, setAvatarOpen] = useState(false)
   const widthRef = useRef(sidebarWidth)
 
   useEffect(() => {
@@ -100,18 +150,19 @@ export default function CabinetLayout() {
   const clientLinks = [
     { to: '/cabinet', end: true, label: 'Обзор', icon: LayoutDashboard },
     { to: '/cabinet/operations', label: 'Операции', icon: ArrowLeftRight },
+    { to: '/cabinet/write-offs', label: 'Списания', icon: ArrowDownRight },
     { to: '/cabinet/invoices', label: 'Счета', icon: Receipt },
     { to: '/cabinet/documents', label: 'Документы', icon: FileText },
     { to: '/cabinet/tariffs', label: 'Тарифы', icon: Wallet },
     { to: '/cabinet/company', label: 'Организации', icon: Building2 },
     { to: '/cabinet/notifications', label: 'Уведомления', icon: Bell },
-    { to: '/cabinet/chat', label: 'Чат', icon: MessageCircle },
     { to: '/cabinet/crm', label: 'Интеграция CRM', icon: Cable },
   ]
 
   const adminLinks = [
     { to: '/cabinet/admin', end: true, label: 'Админ-обзор', icon: Shield },
-    { to: '/cabinet/admin/chat', label: 'Чат', icon: MessageCircle },
+    { to: `/cabinet/admin/direction/${direction}`, label: 'Рабочее место', icon: Building2 },
+    { to: '/cabinet/admin/mail', label: 'Почта', icon: Mail },
     { to: '/cabinet/admin/companies', label: 'Клиенты', icon: Building2 },
     { to: '/cabinet/admin/users', label: 'Пользователи', icon: Users },
     { to: '/cabinet/admin/projects', label: 'Проекты', icon: FolderKanban },
@@ -120,6 +171,7 @@ export default function CabinetLayout() {
     { to: '/cabinet/admin/banking', label: 'Банкинг', icon: Landmark },
     { to: '/cabinet/admin/balance', label: 'Корректировки', icon: Wallet },
     { to: '/cabinet/admin/write-offs', label: 'Списания', icon: ArrowDownRight },
+    { to: '/cabinet/admin/reconciliation', label: 'Сверка', icon: Scale },
     { to: '/cabinet/admin/tariffs', label: 'Тарифы', icon: Tags },
     { to: '/cabinet/admin/api-keys', label: 'API-ключи', icon: KeyRound },
     ...(user?.role === 'admin'
@@ -127,26 +179,49 @@ export default function CabinetLayout() {
       : []),
   ]
 
-  const links = isStaff ? adminLinks : clientLinks
+  // Сотрудник направления видит только своё рабочее место
+  // Счётчик непрочитанных писем для бейджа в меню
+  useEffect(() => {
+    if (!user || !['admin', 'accountant'].includes(user.role)) return
+    let alive = true
+    function refreshMail() {
+      api('/api/mail/status')
+        .then((d) => {
+          if (alive) setMailUnread(Number(d?.unread || 0))
+        })
+        .catch(() => {})
+    }
+    refreshMail()
+    const timer = setInterval(refreshMail, 60000)
+    return () => {
+      alive = false
+      clearInterval(timer)
+    }
+  }, [user])
+
+  const links = isHr
+    ? [
+        {
+          to: `/cabinet/admin/direction/${direction}`,
+          label: 'Рабочее место',
+          icon: Building2,
+        },
+      ]
+    : isStaff
+      ? adminLinks
+      : clientLinks
 
   function doLogout() {
     logout()
     navigate('/account')
   }
 
-  async function onAvatarChange(e) {
-    const file = e.target.files?.[0]
-    if (!file) return
+  // Аватар приходит уже обрезанным из модалки-редактора.
+  async function saveAvatar(blob) {
     const fd = new FormData()
-    fd.append('avatar', file)
-    try {
-      await api('/api/auth/avatar', { method: 'POST', body: fd })
-      await refresh()
-    } catch (err) {
-      alert(err.message)
-    } finally {
-      e.target.value = ''
-    }
+    fd.append('avatar', blob, 'avatar.jpg')
+    await api('/api/auth/avatar', { method: 'POST', body: fd })
+    await refresh()
   }
 
   function onResizePointerDown(e) {
@@ -173,6 +248,11 @@ export default function CabinetLayout() {
       /* ignore */
     }
   }
+
+  const directionContextValue = useMemo(
+    () => ({ direction, setDirection: applyDirection }),
+    [direction, applyDirection],
+  )
 
   return (
     <div
@@ -253,11 +333,34 @@ export default function CabinetLayout() {
           </div>
         ) : null}
 
+        {isStaff ? (
+          <div className="cab-direction-picker">
+            <span className="cab-direction-picker__label">Направление</span>
+            <div className="cab-direction-picker__options">
+              {DIRECTIONS.map((d) => (
+                <button
+                  key={d.code}
+                  type="button"
+                  className={`cab-direction-picker__btn${direction === d.code ? ' active' : ''}`}
+                  onClick={() => pickDirection(d.code)}
+                >
+                  {d.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        ) : null}
+
         <nav className="cab-nav">
           {links.map(({ to, end, label, icon: Icon }) => (
             <NavLink key={to} to={to} end={end} className={({ isActive }) => (isActive ? 'active' : '')}>
               <Icon size={17} />
               <span>{label}</span>
+              {to === '/cabinet/admin/mail' && mailUnread > 0 ? (
+                <em className="cab-mail-unread" title={`Непрочитанных писем: ${mailUnread}`}>
+                  {mailUnread > 99 ? '99+' : mailUnread}
+                </em>
+              ) : null}
               {(to === '/cabinet/chat' || to === '/cabinet/admin/chat') && chatPending > 0 ? (
                 <em
                   className="cab-chat-pending-badge cab-chat-pending-badge--nav"
@@ -271,20 +374,25 @@ export default function CabinetLayout() {
         </nav>
 
         <div className="cab-sidebar-foot">
-          <label className="cab-user" title="Сменить аватар">
-            <span className="cab-user-avatar-wrap">
+          <div className="cab-user">
+            <button
+              type="button"
+              className="cab-user-avatar-wrap"
+              title="Сменить аватар"
+              onClick={() => setAvatarOpen(true)}
+              style={{ padding: 0, border: 'none', background: 'transparent', cursor: 'pointer' }}
+            >
               {user?.avatarUrl ? (
                 <img className="cab-user-avatar" src={mediaUrl(user.avatarUrl)} alt="" />
               ) : (
                 <span className="cab-user-avatar">{(user?.fullName || '?').slice(0, 1)}</span>
               )}
-            </span>
+            </button>
             <span className="cab-user-meta">
               <strong>{user?.fullName}</strong>
               <em>{user?.role}</em>
             </span>
-            <input type="file" accept="image/*" hidden onChange={onAvatarChange} />
-          </label>
+          </div>
           <button type="button" className="cab-logout" onClick={doLogout} title="Выйти">
             <LogOut size={15} />
             <span>Выйти</span>
@@ -293,8 +401,18 @@ export default function CabinetLayout() {
       </aside>
 
       <main className="cab-main">
-        <Outlet />
+        <DirectionContext.Provider value={directionContextValue}>
+          <Outlet />
+        </DirectionContext.Provider>
       </main>
+
+      <AvatarEditorModal
+        open={avatarOpen}
+        userName={user?.fullName || ''}
+        currentUrl={user?.avatarUrl ? mediaUrl(user.avatarUrl) : null}
+        onClose={() => setAvatarOpen(false)}
+        onSave={saveAvatar}
+      />
     </div>
   )
 }

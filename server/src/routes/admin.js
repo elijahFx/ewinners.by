@@ -13,6 +13,7 @@ import {
 import { generateStrongPassword } from '../services/passwords.js';
 import { absoluteAvatarPath, createAvatarUpload } from '../services/avatars.js';
 import { setCompanyApiKey } from '../services/apiKeys.js';
+import { buildReconciliationReport, recoverMissingOrders } from '../services/reconciliation.js';
 import {
   createPlaceholderPasswordHash,
   isMailConfigured,
@@ -131,11 +132,107 @@ router.get('/companies', async (_req, res) => {
               WHERE t.company_id = c.id
                 AND t.valid_from <= CURDATE()
                 AND (t.valid_to IS NULL OR t.valid_to >= CURDATE())
-            ) AS has_own_tariffs
+            ) AS has_own_tariffs,
+            (SELECT GROUP_CONCAT(p.salesrender_id ORDER BY CAST(p.salesrender_id AS UNSIGNED) SEPARATOR ',')
+               FROM company_salesrender_projects p
+              WHERE p.company_id = c.id) AS extra_salesrender_ids
      FROM companies c
      ORDER BY c.id DESC`,
   );
   res.json({ items: rows });
+});
+
+/**
+ * Дополнительные проекты SalesRender у клиента.
+ *
+ * Баланс у клиента один, а проектов в SalesRender может быть несколько
+ * (например, ИП и ООО одного владельца). Основной ID хранится в карточке,
+ * остальные — здесь; списание ищет клиента по любому из них.
+ */
+router.put('/companies/:id/salesrender-projects', requireRoles('admin'), async (req, res) => {
+  try {
+    const companyId = Number(req.params.id);
+    const company = await query('SELECT id FROM companies WHERE id = :id', { id: companyId });
+    if (!company[0]) return res.status(404).json({ error: 'Клиент не найден' });
+
+    const raw = Array.isArray(req.body?.ids) ? req.body.ids : [];
+    const ids = raw
+      .map((v) => String(v ?? '').trim())
+      .filter(Boolean)
+      .filter((v, i, arr) => arr.indexOf(v) === i)
+      .slice(0, 50);
+
+    const taken = ids.length
+      ? await query(
+          `SELECT salesrender_id, company_id FROM company_salesrender_projects
+            WHERE salesrender_id IN (${ids.map(() => '?').join(',')})`,
+          ids,
+        )
+      : [];
+    const busy = taken.filter((r) => Number(r.company_id) !== companyId);
+    if (busy.length) {
+      return res.status(409).json({
+        error: `Эти ID проекта уже привязаны к другому клиенту: ${busy.map((r) => r.salesrender_id).join(', ')}`,
+      });
+    }
+
+    const primary = await query('SELECT salesrender_id FROM companies WHERE id = :id', { id: companyId });
+    const primaryId = String(primary[0]?.salesrender_id || '').trim();
+    if (primaryId && ids.includes(primaryId)) {
+      return res.status(400).json({ error: 'Этот ID уже указан как основной — уберите его из списка' });
+    }
+
+    await query('DELETE FROM company_salesrender_projects WHERE company_id = :id', { id: companyId });
+    for (const srId of ids) {
+      await query(
+        'INSERT INTO company_salesrender_projects (company_id, salesrender_id) VALUES (:id, :sr)',
+        { id: companyId, sr: srId },
+      );
+    }
+
+    await audit(req.user.id, 'company.salesrender_projects', 'company', companyId, { ids });
+    res.json({ ok: true, ids });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Не удалось сохранить проекты SalesRender' });
+  }
+});
+
+/**
+ * Сверка заказов SalesRender со списаниями.
+ *
+ * Показывает заказы в платных статусах, по которым у нас нет операции, —
+ * обычно это значит, что вебхук не дошёл.
+ */
+router.get('/reconciliation', requireRoles('admin', 'accountant'), async (req, res) => {
+  try {
+    const days = Math.min(Math.max(Number(req.query.days) || 1, 1), 31);
+    const from = dayjs().subtract(days - 1, 'day').startOf('day').toISOString();
+    const report = await buildReconciliationReport({ from });
+    res.json(report);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message || 'Не удалось выполнить сверку' });
+  }
+});
+
+router.post('/reconciliation/recover', requireRoles('admin'), async (req, res) => {
+  try {
+    const days = Math.min(Math.max(Number(req.body?.days) || 1, 1), 31);
+    const from = dayjs().subtract(days - 1, 'day').startOf('day').toISOString();
+    const orderIds = Array.isArray(req.body?.orderIds) ? req.body.orderIds.map(String) : null;
+    const result = await recoverMissingOrders({ from, orderIds });
+    await audit(req.user.id, 'reconciliation.recover', 'transaction', null, {
+      from,
+      orderIds,
+      restored: result.restored,
+      amount: result.amount,
+    });
+    res.json(result);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message || 'Не удалось восстановить списания' });
+  }
 });
 
 router.post('/companies', requireRoles('admin'), async (req, res) => {
@@ -867,12 +964,42 @@ router.get('/banking/status', async (_req, res) => {
   }
 });
 
+router.get('/banking/accounts', async (req, res) => {
+  try {
+    const from = String(req.query.from || '').slice(0, 10);
+    const to = String(req.query.to || '').slice(0, 10);
+    const { fetchAllAccountsStatement } = await import('../services/mtbank.js');
+    const data = await fetchAllAccountsStatement({ from, to, refresh: req.query.refresh === '1' });
+    res.json({
+      period: data.period,
+      fetchedAt: data.fetchedAt,
+      accounts: data.accounts,
+      totals: {
+        income: data.accounts.reduce((s, a) => s + Number(a.income || 0), 0),
+        expense: data.accounts.reduce((s, a) => s + Number(a.expense || 0), 0),
+        balance: data.accounts.reduce((s, a) => s + Number(a.balance || 0), 0),
+        operations: data.movements.length,
+      },
+    });
+  } catch (err) {
+    console.error(err);
+    const message = err.message || 'Не удалось загрузить счета MTBank';
+    const upstream = /MTBank вернул ошибку 5\d\d|MTBank HTTP 5\d\d/i.test(message);
+    res.status(upstream ? 502 : 400).json({ error: message });
+  }
+});
+
 router.get('/banking/movements', async (req, res) => {
   try {
     const from = String(req.query.from || '').slice(0, 10);
     const to = String(req.query.to || '').slice(0, 10);
     // refresh=1 bypasses the short-lived statement cache (used by «Обновить»).
-    const data = await fetchMtbankStatement({ from, to, refresh: req.query.refresh === '1' });
+    const data = await fetchMtbankStatement({
+      from,
+      to,
+      refresh: req.query.refresh === '1',
+      iban: req.query.account || null,
+    });
     // Copy: the cached array must not be reordered in place by the sort below.
     let items = [...(data.movements || [])];
     const direction = req.query.direction;
@@ -901,7 +1028,10 @@ router.get('/banking/movements', async (req, res) => {
     });
   } catch (err) {
     console.error(err);
-    res.status(400).json({ error: err.message || 'Не удалось загрузить движения MTBank' });
+    const message = err.message || 'Не удалось загрузить движения MTBank';
+    // Ошибка на стороне банка — это 502, а не ошибка нашего запроса
+    const upstream = /MTBank вернул ошибку 5\d\d|MTBank HTTP 5\d\d|upstream|Bad Gateway/i.test(message);
+    res.status(upstream ? 502 : 400).json({ error: message });
   }
 });
 
@@ -942,7 +1072,11 @@ router.get('/banking/statement.csv', async (req, res) => {
   try {
     const from = String(req.query.from || '').slice(0, 10);
     const to = String(req.query.to || '').slice(0, 10);
-    const data = await fetchMtbankStatement({ from, to });
+    const data = await fetchMtbankStatement({
+      from,
+      to,
+      iban: req.query.account || null,
+    });
     const items = [...(data.movements || [])].sort((a, b) =>
       String(a.date || '').localeCompare(String(b.date || '')),
     );
@@ -1551,6 +1685,12 @@ router.get('/transactions', async (req, res) => {
   if (req.query.type === 'credit' || req.query.type === 'debit') {
     where.push('t.type = :type');
     params.type = req.query.type;
+  }
+  // источник операции: ручную вносил сотрудник, автоматическую создала система
+  if (req.query.source === 'manual') {
+    where.push('t.created_by IS NOT NULL');
+  } else if (req.query.source === 'auto') {
+    where.push('t.created_by IS NULL');
   }
   if (req.query.category) {
     where.push('t.category = :category');

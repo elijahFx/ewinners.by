@@ -69,7 +69,7 @@ function money(amount) {
     .replace(/\B(?=(\d{3})+(?!\d))/g, ' ')} BYN`;
 }
 
-export async function generateInvoicePdf({ number, amount, purpose, company, createdAt }) {
+export async function generateInvoicePdf({ number, amount, purpose, company, createdAt, iban, bank }) {
   ensureDocsDir();
   if (!company?.name) {
     throw new Error('Не указаны реквизиты плательщика для PDF');
@@ -86,8 +86,12 @@ export async function generateInvoicePdf({ number, amount, purpose, company, cre
     );
   }
 
-  const issuer = config.company;
-  const accountantPhone = config.company.accountantPhone || '+375 (25) 505-69-17';
+  // Счёт направления: у HR, Digital и КЦ разные расчётные счета
+  const issuer = {
+    ...config.company,
+    ...(iban ? { iban: String(iban).replace(/\s+/g, '') } : {}),
+    ...(bank ? { bank } : {}),
+  };
 
   await new Promise((resolve, reject) => {
     const doc = new PDFDocument({
@@ -153,11 +157,8 @@ export async function generateInvoicePdf({ number, amount, purpose, company, cre
     if (issuer.unp) doc.text(`УНП: ${issuer.unp}`);
     if (issuer.address) doc.text(issuer.address, { width });
     if (issuer.bank) doc.text(`Банк: ${issuer.bank}`);
-    else doc.text('Банк: — (уточните у менеджера E-Winners)');
     if (issuer.iban) doc.text(`IBAN: ${issuer.iban}`);
-    else doc.text('IBAN: — (уточните у менеджера E-Winners)');
     if (issuer.bic) doc.text(`БИК: ${issuer.bic}`);
-    else doc.text('БИК: —');
     doc.moveDown(0.55);
 
     // Payer
@@ -178,25 +179,6 @@ export async function generateInvoicePdf({ number, amount, purpose, company, cre
     doc.moveDown(0.2);
     doc.font('Regular').fontSize(9.5).fillColor('#333').text(purpose || '—', { width, lineGap: 1 });
     doc.moveDown(0.45);
-
-    // Important note — высота по тексту
-    const noteY = doc.y;
-    const noteText =
-      `Важно: в назначении платежа обязательно укажите номер счёта ${number}. ` +
-      `Без номера счёта зачисление денежных средств не будет выполнено автоматически — ` +
-      `потребуется связаться с бухгалтером по телефону ${accountantPhone}.`;
-    doc.font('Bold').fontSize(8.5);
-    const noteHeight = Math.max(
-      52,
-      doc.heightOfString(noteText, { width: width - 24, lineGap: 1.5 }) + 16,
-    );
-    doc.roundedRect(left, noteY, width, noteHeight, 8).fillAndStroke('#fff7ed', '#fdba74');
-    doc
-      .fillColor('#9a3412')
-      .font('Bold')
-      .fontSize(8.5)
-      .text(noteText, left + 12, noteY + 8, { width: width - 24, lineGap: 1.5 });
-    doc.y = noteY + noteHeight + 8;
 
     // Amount
     const boxY = doc.y;

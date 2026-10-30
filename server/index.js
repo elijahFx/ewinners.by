@@ -16,10 +16,14 @@ import lookupRoutes from './src/routes/lookup.js';
 import telegramRoutes from './src/routes/telegram.js';
 import chatRoutes, { setChatBroadcasters } from './src/routes/chat.js';
 import internalRoutes from './src/routes/internal.js';
+import directionRoutes from './src/routes/direction.js';
+import mailRoutes from './src/routes/mail.js';
 import { attachChatSocket } from './src/services/chatSocket.js';
 import { startTelegramBot } from './src/services/telegramBot.js';
 import { bootstrapYandexDisk, scheduleYandexBackup, syncAllToYandexDisk } from './src/services/yandexBackup.js';
 import { ensureSalesRenderServices } from './src/services/salesrender.js';
+import { scheduleBalanceDigest } from './src/services/balanceDigest.js';
+import { scheduleReconciliation } from './src/services/reconciliationScheduler.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -46,6 +50,8 @@ app.use('/api/lookup', lookupRoutes);
 app.use('/api/telegram', telegramRoutes);
 app.use('/api/chat', chatRoutes);
 app.use('/api/internal', internalRoutes);
+app.use('/api/direction', directionRoutes);
+app.use('/api/mail', mailRoutes);
 
 app.use((err, _req, res, _next) => {
   console.error(err);
@@ -77,6 +83,12 @@ async function start() {
   ensureSalesRenderServices()
     .then(() => console.log('SalesRender services/tariffs ready'))
     .catch((err) => console.warn('SalesRender services bootstrap:', err.message));
+
+  // Раз в день — одна сводка по балансу вместо письма на каждое списание.
+  scheduleBalanceDigest();
+
+  // Раз в день — сверка заказов SalesRender со списаниями: ловит потерянные вебхуки.
+  scheduleReconciliation();
 
   // Passenger (Plesk) manages the port itself
   if (typeof PhusionPassenger !== 'undefined') {

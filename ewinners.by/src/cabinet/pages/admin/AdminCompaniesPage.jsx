@@ -1,7 +1,8 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { api } from '../../api'
 import { statusLabel } from '../../statusLabels'
 import useLiveBalance from '../../useLiveBalance'
+import EditCompanyModal from './EditCompanyModal'
 
 const empty = {
   name: '',
@@ -89,6 +90,39 @@ export default function AdminCompaniesPage() {
   const [unpStatus, setUnpStatus] = useState('')
   const [ibanStatus, setIbanStatus] = useState('')
   const [lookingUnp, setLookingUnp] = useState(false)
+  const [editingId, setEditingId] = useState(null)
+  const [filters, setFilters] = useState({ q: '', status: '', buyout: '', price: '' })
+  const [savingBuyout, setSavingBuyout] = useState(0)
+  const [buyoutError, setBuyoutError] = useState('')
+
+  // Поиск и фильтры считаем на клиенте: список клиентов небольшой,
+  // так фильтр срабатывает мгновенно и не гоняет лишние запросы.
+  const visible = useMemo(() => {
+    const needle = filters.q.trim().toLowerCase();
+    return items.filter((c) => {
+      if (filters.status && c.status !== filters.status) return false;
+      if (filters.buyout === 'on' && Number(c.buyout_enabled) !== 1) return false;
+      if (filters.buyout === 'off' && Number(c.buyout_enabled) === 1) return false;
+      if (filters.price === 'own' && !Number(c.has_own_tariffs)) return false;
+      if (filters.price === 'common' && Number(c.has_own_tariffs)) return false;
+      if (!needle) return true;
+      const haystack = [
+        c.name,
+        c.unp,
+        c.salesrender_id,
+        c.iban,
+        c.bank_name,
+        c.manager_name,
+        c.manager_email,
+        c.manager_phone,
+        c.legal_address,
+      ]
+        .filter(Boolean)
+        .join(' ')
+        .toLowerCase();
+      return haystack.includes(needle);
+    });
+  }, [items, filters]);
 
   async function load() {
     const data = await api('/api/admin/companies')
@@ -193,19 +227,25 @@ export default function AdminCompaniesPage() {
     }
   }
 
-  // Галочка «Отдел выкупа» переключается прямо в списке.
+  // Переключатель «Отдел выкупа» прямо в списке.
   async function toggleBuyout(company) {
     const next = !Number(company.buyout_enabled)
+    setSavingBuyout(company.id)
+    setBuyoutError('')
     try {
-      await api(`/api/admin/companies/${company.id}`, {
+      const res = await api(`/api/admin/companies/${company.id}`, {
         method: 'PATCH',
         body: { buyoutEnabled: next },
       })
+      // Берём значение из ответа сервера, а не из предположения
+      const saved = res?.company ? Number(res.company.buyout_enabled) : next ? 1 : 0
       setItems((prev) =>
-        prev.map((c) => (c.id === company.id ? { ...c, buyout_enabled: next ? 1 : 0 } : c)),
+        prev.map((c) => (c.id === company.id ? { ...c, buyout_enabled: saved } : c)),
       )
     } catch (err) {
-      alert(err.message)
+      setBuyoutError(`Не удалось изменить статус: ${err.message}`)
+    } finally {
+      setSavingBuyout(0)
     }
   }
 
@@ -348,7 +388,74 @@ export default function AdminCompaniesPage() {
         </div>
 
         <div className="cab-card span-4">
+          <div
+            className="flex flex-wrap items-end gap-3"
+            style={{ marginBottom: 14, paddingBottom: 14, borderBottom: '1px solid rgba(154,211,255,0.14)' }}
+          >
+            <label className="cab-muted" style={{ flex: '1 1 260px', fontSize: '0.72rem', fontWeight: 800, letterSpacing: '0.04em' }}>
+              ПОИСК
+              <input
+                value={filters.q}
+                onChange={(e) => setFilters((f) => ({ ...f, q: e.target.value }))}
+                placeholder="Название, УНП, ID проекта, IBAN, менеджер…"
+                style={{ marginTop: 6, width: '100%' }}
+              />
+            </label>
+            <label className="cab-muted" style={{ fontSize: '0.72rem', fontWeight: 800, letterSpacing: '0.04em' }}>
+              СТАТУС
+              <select
+                value={filters.status}
+                onChange={(e) => setFilters((f) => ({ ...f, status: e.target.value }))}
+                style={{ marginTop: 6, display: 'block', minWidth: 150 }}
+              >
+                <option value="">Все</option>
+                <option value="active">Активные</option>
+                <option value="suspended">Приостановленные</option>
+                <option value="blocked">Заблокированные</option>
+              </select>
+            </label>
+            <label className="cab-muted" style={{ fontSize: '0.72rem', fontWeight: 800, letterSpacing: '0.04em' }}>
+              ОТДЕЛ ВЫКУПА
+              <select
+                value={filters.buyout}
+                onChange={(e) => setFilters((f) => ({ ...f, buyout: e.target.value }))}
+                style={{ marginTop: 6, display: 'block', minWidth: 130 }}
+              >
+                <option value="">Все</option>
+                <option value="on">Включён</option>
+                <option value="off">Выключен</option>
+              </select>
+            </label>
+            <label className="cab-muted" style={{ fontSize: '0.72rem', fontWeight: 800, letterSpacing: '0.04em' }}>
+              ПРАЙС
+              <select
+                value={filters.price}
+                onChange={(e) => setFilters((f) => ({ ...f, price: e.target.value }))}
+                style={{ marginTop: 6, display: 'block', minWidth: 170 }}
+              >
+                <option value="">Все</option>
+                <option value="own">Индивидуальный</option>
+                <option value="common">Общий</option>
+              </select>
+            </label>
+            <button
+              type="button"
+              className="cab-btn ghost"
+              style={{ minHeight: 38 }}
+              onClick={() => setFilters({ q: '', status: '', buyout: '', price: '' })}
+            >
+              Сбросить
+            </button>
+            <span className="cab-muted" style={{ fontSize: '0.78rem', marginLeft: 'auto' }}>
+              Показано {visible.length} из {items.length}
+            </span>
+          </div>
+
           <div className="cab-table-wrap">
+            {buyoutError ? (
+              <div className="cab-alert" style={{ marginBottom: 10 }}>{buyoutError}</div>
+            ) : null}
+
             <table className="cab-table">
               <thead>
                 <tr>
@@ -361,14 +468,20 @@ export default function AdminCompaniesPage() {
                   <th>Статус</th>
                   <th>Отдел выкупа</th>
                   <th>Прайс</th>
+                  <th />
                 </tr>
               </thead>
               <tbody>
-                {items.map((c) => (
-                  <tr key={c.id}>
+                {visible.map((c) => (
+                  <tr
+                    key={c.id}
+                    onClick={() => setEditingId(c.id)}
+                    title="Нажмите, чтобы открыть карточку клиента"
+                    style={{ cursor: 'pointer' }}
+                  >
                     <td>{c.id}</td>
                     <td>{c.name}</td>
-                    <td>
+                    <td onClick={(e) => e.stopPropagation()}>
                       <SalesRenderIdCell company={c} onSave={saveSalesRenderId} />
                     </td>
                     <td>{c.unp || '—'}</td>
@@ -377,19 +490,21 @@ export default function AdminCompaniesPage() {
                     <td>
                       <span className="cab-chip">{statusLabel(c.status)}</span>
                     </td>
-                    <td>
-                      <label
-                        title="Клиенту дополнительно списывается 1,50 BYN за каждый выкупленный заказ"
-                        style={{ display: 'inline-flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}
+                    <td onClick={(e) => e.stopPropagation()}>
+                      <button
+                        type="button"
+                        title="Клиенту дополнительно списывается 1,50 BYN за каждый выкупленный заказ. Нажмите, чтобы включить или отключить."
+                        disabled={savingBuyout === c.id}
+                        onClick={() => toggleBuyout(c)}
+                        className={`cab-buyout-toggle${Number(c.buyout_enabled) === 1 ? ' is-on' : ''}`}
                       >
-                        <input
-                          type="checkbox"
-                          style={{ width: 'auto' }}
-                          checked={Number(c.buyout_enabled) === 1}
-                          onChange={() => toggleBuyout(c)}
-                        />
-                        <span className="cab-muted">{Number(c.buyout_enabled) === 1 ? 'вкл' : 'выкл'}</span>
-                      </label>
+                        <span className="cab-buyout-toggle__dot" />
+                        {savingBuyout === c.id
+                          ? '…'
+                          : Number(c.buyout_enabled) === 1
+                            ? 'вкл'
+                            : 'выкл'}
+                      </button>
                     </td>
                     <td>
                       {Number(c.has_own_tariffs) ? (
@@ -403,13 +518,39 @@ export default function AdminCompaniesPage() {
                         <span className="cab-muted">Общий</span>
                       )}
                     </td>
+                    <td onClick={(e) => e.stopPropagation()}>
+                      <button
+                        type="button"
+                        className="cab-btn ghost"
+                        style={{ minHeight: 32, padding: '0 12px', fontSize: '0.78rem' }}
+                        onClick={() => setEditingId(c.id)}
+                      >
+                        Изменить
+                      </button>
+                    </td>
                   </tr>
                 ))}
+                {!visible.length && (
+                  <tr>
+                    <td colSpan={10} className="cab-muted" style={{ textAlign: 'center', padding: '36px 0' }}>
+                      {items.length ? 'По заданным условиям клиентов не найдено' : 'Клиентов пока нет'}
+                    </td>
+                  </tr>
+                )}
               </tbody>
             </table>
           </div>
         </div>
       </div>
+
+      <EditCompanyModal
+        company={items.find((c) => c.id === editingId) || null}
+        onClose={() => setEditingId(null)}
+        onSaved={(updated) => {
+          if (!updated) return
+          setItems((prev) => prev.map((c) => (c.id === updated.id ? { ...c, ...updated } : c)))
+        }}
+      />
     </>
   )
 }

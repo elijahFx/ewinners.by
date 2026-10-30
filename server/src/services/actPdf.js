@@ -68,35 +68,13 @@ export async function generateActPdf({ number, amount, purpose, company, created
 
   doc.moveDown(0.9);
   const signaturesY = doc.y;
-  const colW = width / 2 - 12;
 
+  // Документы односторонние — подпись только исполнителя, на всю ширину.
   doc.font('Bold').fontSize(10).fillColor('#0b1f3a').text('Исполнитель', left, signaturesY, {
-    width: colW,
+    width,
     lineBreak: false,
   });
-  drawDirectorStamp(doc, { left, width: colW, x: left, y: signaturesY + 14 });
-
-  const customerY = signaturesY;
-  doc.font('Bold').fontSize(10).fillColor('#0b1f3a').text('Заказчик', left + width / 2, customerY, {
-    width: colW,
-    lineBreak: false,
-  });
-  doc
-    .font('Regular')
-    .fontSize(10)
-    .fillColor('#333')
-    .text('_________________ / _______________/', left + width / 2, customerY + 48, {
-      width: colW,
-      lineBreak: false,
-    });
-  doc
-    .font('Regular')
-    .fontSize(8)
-    .fillColor('#666')
-    .text('подпись / ФИО', left + width / 2, customerY + 64, {
-      width: colW,
-      lineBreak: false,
-    });
+  drawDirectorStamp(doc, { left, width, x: left, y: signaturesY + 14 });
 
   await done();
   return { filePath, fileName };

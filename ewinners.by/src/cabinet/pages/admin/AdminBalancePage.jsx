@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { api } from '../../api'
 import useLiveBalance from '../../useLiveBalance'
+import SearchSelect from '../../ui/SearchSelect'
 
 export default function AdminBalancePage() {
   const [companies, setCompanies] = useState([])
@@ -29,6 +30,11 @@ export default function AdminBalancePage() {
 
   async function submit(e) {
     e.preventDefault()
+    // Раньше это делал атрибут required у селекта — теперь проверяем сами.
+    if (!form.companyId) {
+      alert('Выберите компанию')
+      return
+    }
     try {
       await api('/api/admin/balance/adjust', {
         method: 'POST',
@@ -58,14 +64,15 @@ export default function AdminBalancePage() {
         <form className="cab-form" onSubmit={submit}>
           <label>
             Компания
-            <select required value={form.companyId} onChange={(e) => setForm({ ...form, companyId: e.target.value })}>
-              <option value="">Выберите</option>
-              {companies.map((c) => (
-                <option key={c.id} value={c.id}>
-                  {c.name} ({Number(c.balance).toFixed(2)} BYN)
-                </option>
-              ))}
-            </select>
+            <SearchSelect
+              value={form.companyId}
+              onChange={(id) => setForm((prev) => ({ ...prev, companyId: id }))}
+              options={companies}
+              getLabel={(c) => c.name}
+              getHint={(c) => `${Number(c.balance).toFixed(2)} BYN`}
+              placeholder="Введите название компании…"
+              emptyText="Компания не найдена"
+            />
           </label>
           <label>
             Тип

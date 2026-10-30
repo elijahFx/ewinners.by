@@ -17,6 +17,8 @@ const statements = [
     low_balance_action ENUM('hard_stop','allow_credit','allow_debt') NOT NULL DEFAULT 'allow_credit',
     buyout_enabled TINYINT(1) NOT NULL DEFAULT 0,
     salesrender_id VARCHAR(64) NULL,
+    last_digest_at DATETIME NULL,
+    low_balance_notified_at DATETIME NULL,
     manager_name VARCHAR(255) NULL,
     manager_phone VARCHAR(64) NULL,
     manager_email VARCHAR(255) NULL,
@@ -31,7 +33,7 @@ const statements = [
     password_hash VARCHAR(255) NOT NULL,
     full_name VARCHAR(255) NOT NULL,
     avatar_url VARCHAR(512) NULL,
-    role ENUM('admin','accountant','manager','client') NOT NULL DEFAULT 'client',
+    role ENUM('admin','accountant','manager','client','hr') NOT NULL DEFAULT 'client',
     company_id INT NULL,
     status ENUM('active','blocked','invited') NOT NULL DEFAULT 'active',
     must_set_password TINYINT(1) NOT NULL DEFAULT 0,
@@ -132,6 +134,12 @@ const statements = [
     unit_price DECIMAL(14,2) NULL,
     crm_event_id VARCHAR(128) NULL,
     employee_name VARCHAR(255) NULL,
+    client_order_number VARCHAR(64) NULL,
+    customer_name VARCHAR(255) NULL,
+    customer_phone VARCHAR(64) NULL,
+    cart_total DECIMAL(14,2) NULL,
+    is_cross TINYINT(1) NOT NULL DEFAULT 0,
+    is_upsell TINYINT(1) NOT NULL DEFAULT 0,
     comment TEXT NULL,
     status ENUM('posted','reversed') NOT NULL DEFAULT 'posted',
     created_by INT NULL,
@@ -303,6 +311,84 @@ export async function migrate() {
   );
   // ID клиента в SalesRender: по нему webhook находит компанию (приоритетнее названия).
   await ensureColumn('companies', 'salesrender_id', 'VARCHAR(64) NULL AFTER buyout_enabled');
+  // Уведомления о балансе: дневная сводка вместо письма на каждое списание,
+  // плюс отметка о последнем предупреждении при пересечении порога.
+  await ensureColumn('companies', 'last_digest_at', 'DATETIME NULL AFTER salesrender_id');
+  await ensureColumn('companies', 'low_balance_notified_at', 'DATETIME NULL AFTER last_digest_at');
+
+  // Детали заказа SalesRender для детализации и выгрузки в Excel.
+  await ensureColumn('transactions', 'client_order_number', 'VARCHAR(64) NULL');
+  await ensureColumn('transactions', 'customer_name', 'VARCHAR(255) NULL');
+  await ensureColumn('transactions', 'customer_phone', 'VARCHAR(64) NULL');
+  await ensureColumn('transactions', 'cart_total', 'DECIMAL(14,2) NULL');
+  await ensureColumn('transactions', 'is_cross', 'TINYINT(1) NOT NULL DEFAULT 0');
+  await ensureColumn('transactions', 'is_upsell', 'TINYINT(1) NOT NULL DEFAULT 0');
+
+  // Расчётный счёт, на который выставлен счёт
+  await pool.execute('ALTER TABLE invoices ADD COLUMN account_iban VARCHAR(64) NULL').catch(() => {});
+
+  // Новая роль HR: сотрудник направления, видит только свою страницу
+  await pool.execute(
+    "ALTER TABLE users MODIFY role ENUM('admin','accountant','manager','client','hr') NOT NULL DEFAULT 'client'",
+  );
+
+  // У одного клиента может быть несколько проектов в SalesRender, а баланс —
+  // один. Основной ID лежит в companies.salesrender_id, дополнительные здесь.
+  await pool.execute(
+    `CREATE TABLE IF NOT EXISTS company_salesrender_projects (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      company_id INT NOT NULL,
+      salesrender_id VARCHAR(64) NOT NULL,
+      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE KEY uq_csp_sr (salesrender_id),
+      CONSTRAINT fk_csp_company FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+  );
+
+  // Почтовый клиент: письма, вложения и служебное состояние
+  await pool.execute(`
+    CREATE TABLE IF NOT EXISTS mail_messages (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      message_id VARCHAR(255) NULL,
+      mailbox VARCHAR(64) NOT NULL DEFAULT 'INBOX',
+      direction ENUM('incoming','outgoing') NOT NULL DEFAULT 'incoming',
+      subject VARCHAR(500) NULL,
+      from_address VARCHAR(255) NULL,
+      from_name VARCHAR(255) NULL,
+      to_address TEXT NULL,
+      cc_address TEXT NULL,
+      sent_at DATETIME NOT NULL,
+      is_read TINYINT(1) NOT NULL DEFAULT 0,
+      has_attachments TINYINT(1) NOT NULL DEFAULT 0,
+      snippet TEXT NULL,
+      body_text MEDIUMTEXT NULL,
+      body_html MEDIUMTEXT NULL,
+      imap_uid INT NULL,
+      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE KEY uq_mail_uid (mailbox, imap_uid),
+      KEY idx_mail_sent (sent_at),
+      KEY idx_mail_dir (direction)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+  `);
+
+  await pool.execute(`
+    CREATE TABLE IF NOT EXISTS mail_attachments (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      message_id INT NOT NULL,
+      filename VARCHAR(255) NULL,
+      content_type VARCHAR(128) NULL,
+      size INT NOT NULL DEFAULT 0,
+      content LONGBLOB NULL,
+      KEY idx_att_message (message_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+  `);
+
+  await pool.execute(`
+    CREATE TABLE IF NOT EXISTS mail_sync_state (
+      key_name VARCHAR(64) PRIMARY KEY,
+      value VARCHAR(255) NOT NULL
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+  `);
   try {
     await pool.execute(
       'ALTER TABLE companies ADD UNIQUE KEY uq_companies_salesrender_id (salesrender_id)',

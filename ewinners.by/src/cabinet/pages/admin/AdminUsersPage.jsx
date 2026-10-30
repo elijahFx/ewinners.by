@@ -1,7 +1,8 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Building2, Copy, KeyRound, Plus, Trash2, X } from 'lucide-react'
 import { api, mediaUrl } from '../../api'
 import { statusLabel } from '../../statusLabels'
+import AvatarEditorModal from '../../ui/AvatarEditorModal'
 
 const emptyForm = {
   email: '',
@@ -169,6 +170,27 @@ export default function AdminUsersPage() {
   const [created, setCreated] = useState(null)
   const [saving, setSaving] = useState(false)
   const [showCreate, setShowCreate] = useState(false)
+  const [filters, setFilters] = useState({ q: '', role: '', status: '', companyId: '' })
+
+  // Поиск и фильтры на клиенте: список небольшой, работает мгновенно.
+  const visible = useMemo(() => {
+    const needle = filters.q.trim().toLowerCase();
+    return items.filter((u) => {
+      if (filters.role && u.role !== filters.role) return false;
+      if (filters.status && u.status !== filters.status) return false;
+      if (filters.companyId === 'none' && u.company_id) return false;
+      if (filters.companyId && filters.companyId !== 'none' && String(u.company_id || '') !== filters.companyId) {
+        return false;
+      }
+      if (!needle) return true;
+      const haystack = [u.full_name, u.email, u.phone, u.company_name]
+        .filter(Boolean)
+        .join(' ')
+        .toLowerCase();
+      return haystack.includes(needle);
+    });
+  }, [items, filters]);
+  const [avatarUser, setAvatarUser] = useState(null)
   const [orgsUser, setOrgsUser] = useState(null)
   const [linkedCompanies, setLinkedCompanies] = useState([])
   const [addCompanyId, setAddCompanyId] = useState('')
@@ -326,16 +348,12 @@ export default function AdminUsersPage() {
     }
   }
 
-  async function uploadAvatar(user, file) {
-    if (!file) return
+  // Аватар приходит уже обрезанным из модалки-редактора.
+  async function saveAvatar(user, blob) {
     const fd = new FormData()
-    fd.append('avatar', file)
-    try {
-      await api(`/api/admin/users/${user.id}/avatar`, { method: 'POST', body: fd })
-      await load()
-    } catch (err) {
-      alert(err.message)
-    }
+    fd.append('avatar', blob, 'avatar.jpg')
+    await api(`/api/admin/users/${user.id}/avatar`, { method: 'POST', body: fd })
+    await load()
   }
 
   function setPasswordMode(mode) {
@@ -372,6 +390,7 @@ export default function AdminUsersPage() {
     { value: 'client', label: 'Клиент' },
     { value: 'manager', label: 'Менеджер' },
     { value: 'accountant', label: 'Бухгалтер' },
+    { value: 'hr', label: 'HR (направление)' },
     { value: 'admin', label: 'Админ' },
   ]
   const statusOptions = [
@@ -601,6 +620,79 @@ export default function AdminUsersPage() {
         </div>
       ) : null}
 
+      <div className="rounded-2xl border border-[#2a5f8f] bg-[#0b1f3a] p-4">
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          <label className="block text-xs font-bold uppercase tracking-wide text-[#9db8d4]">
+            Поиск
+            <input
+              className={field}
+              value={filters.q}
+              onChange={(e) => setFilters((f) => ({ ...f, q: e.target.value }))}
+              placeholder="ФИО, email, телефон…"
+            />
+          </label>
+          <label className="block text-xs font-bold uppercase tracking-wide text-[#9db8d4]">
+            Роль
+            <select
+              className={field}
+              value={filters.role}
+              onChange={(e) => setFilters((f) => ({ ...f, role: e.target.value }))}
+            >
+              <option value="">Все роли</option>
+              {roleOptions.map((o) => (
+                <option key={o.value} value={o.value}>
+                  {o.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="block text-xs font-bold uppercase tracking-wide text-[#9db8d4]">
+            Статус
+            <select
+              className={field}
+              value={filters.status}
+              onChange={(e) => setFilters((f) => ({ ...f, status: e.target.value }))}
+            >
+              <option value="">Все статусы</option>
+              {statusOptions.map((o) => (
+                <option key={o.value} value={o.value}>
+                  {o.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="block text-xs font-bold uppercase tracking-wide text-[#9db8d4]">
+            Организация
+            <select
+              className={field}
+              value={filters.companyId}
+              onChange={(e) => setFilters((f) => ({ ...f, companyId: e.target.value }))}
+            >
+              <option value="">Все организации</option>
+              <option value="none">Без организации</option>
+              {companies.map((c) => (
+                <option key={c.id} value={String(c.id)}>
+                  {c.name}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
+
+        <div className="mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-[#1e4a73] pt-4 text-xs text-[#9db8d4]">
+          <span>
+            Показано {visible.length} из {items.length}
+          </span>
+          <button
+            type="button"
+            className="rounded-full border border-[#2a5f8f] bg-transparent px-4 py-1.5 text-xs font-bold text-[#cfe6ff] hover:bg-white/5"
+            onClick={() => setFilters({ q: '', role: '', status: '', companyId: '' })}
+          >
+            Сбросить фильтры
+          </button>
+        </div>
+      </div>
+
       <div
         ref={tableWrapRef}
         style={{
@@ -654,17 +746,21 @@ export default function AdminUsersPage() {
             </tr>
           </thead>
           <tbody>
-              {items.map((u) => (
+              {visible.map((u) => (
                 <tr key={u.id} className="bg-transparent hover:bg-[#122a4d]/70">
                   <td className={`${cell} px-2 py-2`} style={{ width: cols.avatar, minWidth: cols.avatar }}>
-                    <label className="grid h-9 w-9 cursor-pointer place-items-center overflow-hidden rounded-full border border-[#2a5f8f] bg-[#1a3a63] text-sm font-extrabold text-white">
+                    <button
+                      type="button"
+                      title="Изменить аватар"
+                      onClick={() => setAvatarUser(u)}
+                      className="grid h-9 w-9 cursor-pointer place-items-center overflow-hidden rounded-full border border-[#2a5f8f] bg-[#1a3a63] p-0 text-sm font-extrabold text-white hover:border-[#4ea8ff]"
+                    >
                       {u.avatar_url ? (
                         <img src={mediaUrl(u.avatar_url)} alt="" className="h-full w-full object-cover" />
                       ) : (
                         <span>{(u.full_name || '?').slice(0, 1)}</span>
                       )}
-                      <input type="file" accept="image/*" hidden onChange={(e) => uploadAvatar(u, e.target.files?.[0])} />
-                    </label>
+                    </button>
                   </td>
                   <td className={cell} style={{ width: cols.name, minWidth: cols.name }}>
                     <InlineCell value={u.full_name} onSave={(fullName) => patchUser(u.id, { fullName })} />
@@ -744,9 +840,29 @@ export default function AdminUsersPage() {
                   </td>
                 </tr>
               ))}
+              {!visible.length && (
+                <tr>
+                  <td
+                    colSpan={colOrder.length}
+                    className="px-3 py-10 text-center text-sm text-[#9db8d4]"
+                  >
+                    {items.length
+                      ? 'По заданным условиям пользователей не найдено'
+                      : 'Пользователей пока нет'}
+                  </td>
+                </tr>
+              )}
           </tbody>
         </table>
       </div>
+
+      <AvatarEditorModal
+        open={Boolean(avatarUser)}
+        userName={avatarUser?.full_name || ''}
+        currentUrl={avatarUser?.avatar_url ? mediaUrl(avatarUser.avatar_url) : null}
+        onClose={() => setAvatarUser(null)}
+        onSave={(blob) => saveAvatar(avatarUser, blob)}
+      />
     </div>
   )
 }

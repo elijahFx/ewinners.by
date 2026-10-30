@@ -8,6 +8,8 @@ import {
 import { syncMtbankPayments } from '../services/bankSync.js';
 import { bootstrapYandexDisk, syncAllToYandexDisk } from '../services/yandexBackup.js';
 import { yandexDiskConfig } from '../services/yandexDisk.js';
+import { sendDailyBalanceDigests } from '../services/notify.js';
+import { runReconciliationCheck } from '../services/reconciliationScheduler.js';
 
 const router = Router();
 
@@ -34,6 +36,37 @@ function cronAuth(req, res, next) {
 }
 
 router.use(cronAuth);
+
+/**
+ * Дневная сводка по балансу. Обычно её шлёт внутренний планировщик,
+ * эндпоинт нужен для ручного запуска и проверки.
+ * ?force=1 — отправить, даже если сегодня уже отправляли.
+ */
+router.post('/balance/digest', async (req, res) => {
+  try {
+    const force = ['1', 'true', 'yes'].includes(String(req.query.force || '').toLowerCase());
+    const result = await sendDailyBalanceDigests({ force });
+    res.json({ ok: true, ...result });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message || 'Не удалось отправить сводку' });
+  }
+});
+
+/**
+ * Сверка заказов SalesRender со списаниями.
+ * ?force=1 — выполнить, даже если сегодня уже проверяли.
+ */
+router.post('/reconciliation', async (req, res) => {
+  try {
+    const force = ['1', 'true', 'yes'].includes(String(req.query.force || '').toLowerCase());
+    const result = await runReconciliationCheck({ force });
+    res.json({ ok: true, ...result });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message || 'Не удалось выполнить сверку' });
+  }
+});
 
 /** PHP / system cron: check incoming payments and mark matching invoices paid */
 router.post('/bank/sync', async (req, res) => {

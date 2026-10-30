@@ -1383,3 +1383,97 @@ select option {
     display: none;
   }
 }
+
+/* Переключатель направлений в сайдбаре */
+.cab-direction-picker {
+  margin: 10px 12px 4px;
+  padding: 8px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+}
+.cab-direction-picker__label {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 0.66rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #9db8d4;
+}
+/* Список в столбик: в узком сайдбаре подписи в ряд не помещаются */
+.cab-direction-picker__options {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 3px;
+}
+.cab-direction-picker__btn {
+  height: 30px;
+  min-width: 0;
+  padding: 0 10px;
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: #9db8d4;
+  font-size: 0.76rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+.cab-direction-picker__btn:hover { background: rgba(255, 255, 255, 0.06); color: #f3f8ff; }
+.cab-direction-picker__btn.active { background: #258dff; color: #fff; }
+
+/* Переключатель «Отдел выкупа» в списке клиентов */
+.cab-buyout-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  padding: 0 10px 0 6px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.05);
+  color: #9db8d4;
+  font-size: 0.74rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+.cab-buyout-toggle:hover { background: rgba(255, 255, 255, 0.1); color: #f3f8ff; }
+.cab-buyout-toggle:disabled { opacity: 0.6; cursor: wait; }
+.cab-buyout-toggle__dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #6f8bab;
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.06);
+}
+.cab-buyout-toggle.is-on {
+  border-color: rgba(125, 255, 194, 0.4);
+  background: rgba(125, 255, 194, 0.12);
+  color: #7dffc2;
+}
+.cab-buyout-toggle.is-on .cab-buyout-toggle__dot { background: #7dffc2; }
+
+/* Красный счётчик непрочитанных писем в меню */
+.cab-mail-unread {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 9px;
+  background: #e5484d;
+  color: #fff;
+  font-size: 0.68rem;
+  font-weight: 800;
+  font-style: normal;
+  line-height: 1;
+  box-shadow: 0 0 0 2px rgba(229, 72, 77, 0.2);
+}

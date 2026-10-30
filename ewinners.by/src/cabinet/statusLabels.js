@@ -26,6 +26,7 @@ export const STATUS_LABELS = {
   client: 'Клиент',
   admin: 'Админ',
   accountant: 'Бухгалтер',
+  hr: 'HR (направление)',
   manager: 'Менеджер',
   // billing types
   unit: 'За единицу',

@@ -1,17 +1,37 @@
 import { useEffect, useMemo, useState } from 'react'
 import { ArrowDownLeft, ArrowUpRight, Download, Landmark, RefreshCw } from 'lucide-react'
 import { api, apiDownload } from '../../api'
+import { DIRECTIONS, useDirection } from '../../DirectionContext'
 import Button from '../../ui/Button'
 import SearchField from '../../ui/SearchField'
 import SegmentedControl from '../../ui/SegmentedControl'
 import Skeleton from '../../ui/Skeleton'
 
+// Банковские данные приходят из MTBank с IBAN без пробелов — сравниваем так же.
+function normIban(value) {
+  return String(value || '').replace(/\s+/g, '').toUpperCase()
+}
+
+const EMPTY_SUMMARY = {
+  income: 0,
+  expense: 0,
+  net: 0,
+  incomeCount: 0,
+  expenseCount: 0,
+}
+
+function localDate(d) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+
 function periodDefaults() {
   const to = new Date()
   const from = new Date(to.getFullYear(), to.getMonth(), 1)
+  // toISOString() в Минске (UTC+3) сдвигает полночь на предыдущий день,
+  // поэтому собираем дату из локальных компонентов.
   return {
-    from: from.toISOString().slice(0, 10),
-    to: to.toISOString().slice(0, 10),
+    from: localDate(from),
+    to: localDate(to),
   }
 }
 
@@ -51,17 +71,17 @@ const fieldClass =
   'mt-1.5 h-10 w-full rounded-lg border border-transparent bg-white/[0.06] px-3 text-sm font-medium text-[#f3f8ff] outline-none focus:bg-white/[0.09] focus:ring-2 focus:ring-[#4ea8ff]/35'
 
 export default function AdminBankingPage() {
+  const { direction, setDirection } = useDirection()
   const [tab, setTab] = useState('income')
   const [filters, setFilters] = useState({ ...periodDefaults(), q: '' })
   const [items, setItems] = useState([])
-  const [summary, setSummary] = useState({
-    income: 0,
-    expense: 0,
-    net: 0,
-    incomeCount: 0,
-    expenseCount: 0,
-  })
+  const [summary, setSummary] = useState(EMPTY_SUMMARY)
   const [account, setAccount] = useState(null)
+  const [accounts, setAccounts] = useState([])
+  const [accountsLoaded, setAccountsLoaded] = useState(false)
+  // Счета направлений (HR / Digital / КЦ) — по ним страница следует за сайдбаром.
+  const [directionAccounts, setDirectionAccounts] = useState([])
+  const [directionLoaded, setDirectionLoaded] = useState(false)
   const [configured, setConfigured] = useState(false)
   const [message, setMessage] = useState('')
   const [fetchedAt, setFetchedAt] = useState(null)
@@ -69,60 +89,145 @@ export default function AdminBankingPage() {
   // Данные из MTBank приходят за несколько секунд, поэтому до первого ответа
   // показываем скелетон, а не нули.
   const [loaded, setLoaded] = useState(false)
+  // Какой счёт уже загружен: при смене направления показываем скелетон,
+  // чтобы не выводить данные старого счёта под новым заголовком.
+  const [loadedAccountIban, setLoadedAccountIban] = useState('')
+  // Счёт, по которому банк ответил «не найден в согласии».
+  const [unavailableIban, setUnavailableIban] = useState('')
   const [syncing, setSyncing] = useState(false)
   const [error, setError] = useState('')
 
   // Поиск не должен дёргать MTBank на каждое нажатие клавиши.
   const [debouncedQ, setDebouncedQ] = useState('')
 
+  // Счета из согласия MTBank — по ним понимаем, подключён ли счёт направления.
+  useEffect(() => {
+    api('/api/admin/banking/accounts')
+      .then((d) => setAccounts(d.accounts || []))
+      .catch(() => setAccounts([]))
+      .finally(() => setAccountsLoaded(true))
+  }, [])
+
+  // Карта «направление → IBAN»: тот же справочник, что и в рабочем месте.
+  useEffect(() => {
+    api('/api/direction/accounts')
+      .then((d) => setDirectionAccounts(d.items || []))
+      .catch(() => setDirectionAccounts([]))
+      .finally(() => setDirectionLoaded(true))
+  }, [])
+
   useEffect(() => {
     const timer = setTimeout(() => setDebouncedQ(filters.q.trim()), 300)
     return () => clearTimeout(timer)
   }, [filters.q])
 
-  // `direction` намеренно не отправляем: API отдаёт все операции за период,
-  // а вкладка фильтрует их локально — переключение вкладок мгновенное.
+  const directionAccount = directionAccounts.find((a) => a.code === direction) || null
+  const directionLabel =
+    DIRECTIONS.find((d) => d.code === direction)?.label || directionAccount?.label || 'HR'
+  const accountIban = normIban(directionAccount?.iban || '')
+  const accountInConsent = accounts.some((a) => normIban(a.iban) === accountIban)
+  // Счёт направления может быть не подключён к согласию MTBank. В этом случае
+  // не запрашиваем выписку (банк вернёт ошибку), а показываем объяснение.
+  const notConnected =
+    Boolean(accountIban) &&
+    (unavailableIban === accountIban ||
+      (directionLoaded &&
+        accountsLoaded &&
+        accounts.length > 0 &&
+        !accountInConsent))
+  const notConnectedMessage =
+    notConnected && directionAccount
+      ? `Счёт ${directionAccount.label} (${directionAccount.formatted || accountIban}) не подключён к согласию MTBank. Данные появятся после добавления счёта в согласие.`
+      : ''
+
+  // Вкладки фильтруют уже загруженные операции локально, поэтому их смена
+  // не дёргает банк. В запрос уходит только счёт выбранного направления.
   const queryString = useMemo(() => {
     const p = new URLSearchParams()
     if (filters.from) p.set('from', filters.from)
     if (filters.to) p.set('to', filters.to)
     if (debouncedQ) p.set('q', debouncedQ)
+    if (accountIban) p.set('account', accountIban)
     return p.toString()
-  }, [filters.from, filters.to, debouncedQ])
+  }, [filters.from, filters.to, debouncedQ, accountIban])
 
   async function load({ refresh = false } = {}) {
     setLoading(true)
     setError('')
+
+    // Счёт направления не входит в согласие банка: показываем сам счёт,
+    // но без выписки и с нулевыми оборотами. «Обновить» всё равно пробует
+    // банк — вдруг счёт уже добавили в согласие.
+    if (notConnected && !refresh) {
+      setItems([])
+      setSummary(EMPTY_SUMMARY)
+      setAccount({
+        iban: accountIban,
+        name: directionAccount?.label || 'Расчётный счёт',
+        currency: 'BYN',
+        balance: null,
+        balanceAt: null,
+      })
+      setConfigured(true)
+      setMessage('')
+      setFetchedAt(null)
+      setLoaded(true)
+      setLoadedAccountIban(accountIban)
+      setLoading(false)
+      return
+    }
+
     try {
       const data = await api(
         `/api/admin/banking/movements?${queryString}${refresh ? '&refresh=1' : ''}`,
       )
       setItems(data.items || [])
-      setSummary(
-        data.summary || {
-          income: 0,
-          expense: 0,
-          net: 0,
-          incomeCount: 0,
-          expenseCount: 0,
-        },
-      )
+      setSummary(data.summary || EMPTY_SUMMARY)
       setAccount(data.account || null)
       setConfigured(Boolean(data.configured))
       setMessage(data.message || '')
       setFetchedAt(data.fetchedAt || null)
       setLoaded(true)
+      setLoadedAccountIban(accountIban)
+      setUnavailableIban('')
     } catch (err) {
-      setError(err.message)
-      setItems([])
+      const text = err.message || ''
+      if (/не найден в согласии/i.test(text)) {
+        // Счёт направления просто не добавлен в согласие MTBank — это не
+        // ошибка связи, показываем отдельное объяснение вместо красной плашки.
+        setUnavailableIban(accountIban)
+        setItems([])
+        setSummary(EMPTY_SUMMARY)
+        setAccount({
+          iban: accountIban,
+          name: directionAccount?.label || 'Расчётный счёт',
+          currency: 'BYN',
+          balance: null,
+          balanceAt: null,
+        })
+        setConfigured(true)
+        setMessage('')
+        setFetchedAt(null)
+        setError('')
+      } else {
+        setError(text)
+        setItems([])
+        setSummary(EMPTY_SUMMARY)
+        setAccount(null)
+      }
+      setLoaded(true)
+      setLoadedAccountIban(accountIban)
     } finally {
       setLoading(false)
     }
   }
 
+  // Ждём только справочник направлений: он быстрый и задаёт счёт.
+  // Полный список счетов согласия догружается параллельно и уточняет подписи.
   useEffect(() => {
+    if (!directionLoaded) return
     load()
-  }, [queryString])
+  }, [queryString, notConnected, directionLoaded])
 
   async function exportCsv() {
     setError('')
@@ -130,9 +235,10 @@ export default function AdminBankingPage() {
       const p = new URLSearchParams()
       if (filters.from) p.set('from', filters.from)
       if (filters.to) p.set('to', filters.to)
+      if (accountIban) p.set('account', accountIban)
       await apiDownload(
         `/api/admin/banking/statement.csv?${p.toString()}`,
-        `mtbank_${filters.from}_${filters.to}.csv`,
+        `mtbank_${directionLabel}_${filters.from}_${filters.to}.csv`,
       )
     } catch (err) {
       setError(err.message)
@@ -163,16 +269,18 @@ export default function AdminBankingPage() {
   }
 
   const currency = account?.currency || 'BYN'
-  // Скелетон показываем только до первого ответа банка. При обновлении
-  // фильтров старые данные остаются на экране, чтобы не было мерцания.
-  const showSkeleton = loading && !loaded
-  const emptyLabel = !configured
-    ? 'Нет данных: MTBank API ещё не подключён'
-    : tab === 'income'
-      ? 'За период поступлений нет'
-      : tab === 'expense'
-        ? 'За период списаний нет'
-        : 'За период операций нет'
+  // Скелетон показываем до первого ответа банка и при смене счёта. При
+  // обновлении фильтров по тому же счёту старые данные остаются, без мерцания.
+  const showSkeleton = loading && (!loaded || loadedAccountIban !== accountIban)
+  const emptyLabel = notConnected
+    ? 'Счёт не подключён к MTBank'
+    : !configured
+      ? 'Нет данных: MTBank API ещё не подключён'
+      : tab === 'income'
+        ? 'За период поступлений нет'
+        : tab === 'expense'
+          ? 'За период списаний нет'
+          : 'За период операций нет'
 
   // Вкладка фильтрует уже загруженные операции — без обращения к банку.
   const visibleItems = useMemo(
@@ -217,7 +325,8 @@ export default function AdminBankingPage() {
         <div>
           <h1 className="m-0 text-[28px] font-bold leading-tight text-white">Банкинг</h1>
           <p className="mt-1 text-sm text-[#9db8d4]">
-            Поступления, списания и выписка по расчётному счёту из MTBank Open API.
+            Поступления, списания и выписка по счёту направления{' '}
+            <span className="font-bold text-[#8fd2ff]">{directionLabel}</span> из MTBank Open API.
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -238,9 +347,37 @@ export default function AdminBankingPage() {
 
       <SegmentedControl items={tabs} value={tab} onChange={setTab} />
 
+      {notConnected ? (
+        <div className="rounded-xl border border-amber-400/20 bg-[#2a2110] px-4 py-3 text-sm text-[#ffd58a]">
+          {notConnectedMessage}
+        </div>
+      ) : null}
+
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4" aria-busy={showSkeleton}>
         <div className="rounded-2xl border border-white/[0.06] bg-[#0b1f3a] p-4">
           <div className="text-xs font-bold uppercase tracking-wide text-[#9db8d4]">Счёт</div>
+          {directionAccounts.length > 1 ? (
+            <select
+              className="mt-1.5 h-9 w-full rounded-lg border border-transparent bg-white/[0.06] px-2 text-xs font-medium text-[#f3f8ff] outline-none focus:bg-white/[0.09]"
+              value={accountIban}
+              onChange={(e) => {
+                const next = directionAccounts.find(
+                  (a) => normIban(a.iban) === normIban(e.target.value),
+                )
+                if (next) setDirection(next.code)
+              }}
+            >
+              {directionAccounts.map((a) => {
+                const connected = accounts.some((x) => normIban(x.iban) === normIban(a.iban))
+                return (
+                  <option key={a.iban} value={a.iban}>
+                    {a.label} — {a.formatted}
+                    {accountsLoaded && !connected ? ' (не подключён)' : ''}
+                  </option>
+                )
+              })}
+            </select>
+          ) : null}
           {showSkeleton ? (
             <>
               <Skeleton className="mt-2 h-5 w-44" />
@@ -251,7 +388,9 @@ export default function AdminBankingPage() {
               <div className="mt-2 font-mono text-sm font-semibold text-[#8fd2ff]">
                 {account?.iban || '—'}
               </div>
-              <div className="mt-1 text-xs text-[#9db8d4]">{account?.name || 'MTBank'}</div>
+              <div className="mt-1 text-xs text-[#9db8d4]">
+                {notConnected ? 'Не подключён к MTBank' : account?.name || 'MTBank'}
+              </div>
             </>
           )}
         </div>
@@ -268,11 +407,13 @@ export default function AdminBankingPage() {
                 {account?.balance == null ? '—' : money(account.balance, currency)}
               </div>
               <div className="mt-1 text-xs text-[#9db8d4]">
-                {!configured
-                  ? 'API не настроен'
-                  : account?.balanceAt
-                    ? `MTBank · на ${formatDateTime(account.balanceAt)}`
-                    : 'Источник: MTBank'}
+                {notConnected
+                  ? 'Счёт не подключён к MTBank'
+                  : !configured
+                    ? 'API не настроен'
+                    : account?.balanceAt
+                      ? `MTBank · на ${formatDateTime(account.balanceAt)}`
+                      : 'Источник: MTBank'}
               </div>
             </>
           )}

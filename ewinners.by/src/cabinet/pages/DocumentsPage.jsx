@@ -91,7 +91,7 @@ export default function DocumentsPage() {
     try {
       const data = await api('/api/cabinet/documents/detail/generate', {
         method: 'POST',
-        body: { companyId: company?.id || user?.companyId },
+        body: { companyId: company?.id || user?.companyId, from, to },
       })
       await load()
       const doc = data.document
@@ -136,6 +136,7 @@ export default function DocumentsPage() {
               type="date"
               className="cab-select"
               value={from}
+              min="2026-09-01"
               max={to || undefined}
               onChange={(e) => setFrom(e.target.value)}
             />

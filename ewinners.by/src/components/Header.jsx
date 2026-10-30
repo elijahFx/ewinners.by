@@ -31,12 +31,33 @@ export default function Header({ contactHref = '#contact' }) {
         <Link to="/target" onClick={() => setOpen(false)}>
           Маркетинг
         </Link>
+        {/*
+          Вход и кабинет внутри меню. На широком экране это дублировало бы
+          кнопки справа, поэтому показываем только в мобильном меню —
+          без этого с телефона войти было некуда: кнопка входа скрыта.
+        */}
+        <div className="nav-signin">
+          {user ? (
+            <>
+              <Link to="/cabinet" onClick={() => setOpen(false)}>
+                Личный кабинет
+              </Link>
+              <button type="button" className="nav-logout" onClick={doLogout}>
+                Выйти
+              </button>
+            </>
+          ) : (
+            <Link to="/account" onClick={() => setOpen(false)}>
+              Войти в личный кабинет
+            </Link>
+          )}
+        </div>
         {user && (
           <>
-            <Link to="/cabinet" onClick={() => setOpen(false)}>
+            <Link to="/cabinet" className="nav-wide-only" onClick={() => setOpen(false)}>
               Личный кабинет
             </Link>
-            <button type="button" className="nav-logout" onClick={doLogout}>
+            <button type="button" className="nav-logout nav-wide-only" onClick={doLogout}>
               Выйти
             </button>
           </>

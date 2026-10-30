@@ -14,15 +14,17 @@ import ProtectedRoute from './cabinet/ProtectedRoute'
 import CabinetLayout from './cabinet/CabinetLayout'
 import DashboardPage from './cabinet/pages/DashboardPage'
 import OperationsPage from './cabinet/pages/OperationsPage'
+import ClientWriteOffsPage from './cabinet/pages/ClientWriteOffsPage'
 import InvoicesPage from './cabinet/pages/InvoicesPage'
 import DocumentsPage from './cabinet/pages/DocumentsPage'
 import TariffsPage from './cabinet/pages/TariffsPage'
 import CompanyPage from './cabinet/pages/CompanyPage'
 import NotificationsPage from './cabinet/pages/NotificationsPage'
 import CrmIntegrationPage from './cabinet/pages/CrmIntegrationPage'
-import ChatPage from './cabinet/pages/ChatPage'
 import AdminOverviewPage from './cabinet/pages/admin/AdminOverviewPage'
 import AdminCompaniesPage from './cabinet/pages/admin/AdminCompaniesPage'
+import AdminDirectionPage from './cabinet/pages/admin/AdminDirectionPage'
+import AdminMailPage from './cabinet/pages/admin/AdminMailPage'
 import AdminUsersPage from './cabinet/pages/admin/AdminUsersPage'
 import AdminProjectsPage from './cabinet/pages/admin/AdminProjectsPage'
 import AdminBankingPage from './cabinet/pages/admin/AdminBankingPage'
@@ -30,6 +32,7 @@ import AdminInvoicesPage from './cabinet/pages/admin/AdminInvoicesPage'
 import AdminDocumentsPage from './cabinet/pages/admin/AdminDocumentsPage'
 import AdminBalancePage from './cabinet/pages/admin/AdminBalancePage'
 import AdminWriteOffsPage from './cabinet/pages/admin/AdminWriteOffsPage'
+import AdminReconciliationPage from './cabinet/pages/admin/AdminReconciliationPage'
 import AdminApiKeysPage from './cabinet/pages/admin/AdminApiKeysPage'
 import AdminTariffsPage from './cabinet/pages/admin/AdminTariffsPage'
 
@@ -82,6 +85,14 @@ export default function App() {
             }
           />
           <Route
+            path="write-offs"
+            element={
+              <ProtectedRoute roles={['client']}>
+                <ClientWriteOffsPage />
+              </ProtectedRoute>
+            }
+          />
+          <Route
             path="invoices"
             element={
               <ProtectedRoute roles={['client']}>
@@ -129,14 +140,6 @@ export default function App() {
               </ProtectedRoute>
             }
           />
-          <Route
-            path="chat"
-            element={
-              <ProtectedRoute roles={['client', 'admin', 'accountant']}>
-                <ChatPage />
-              </ProtectedRoute>
-            }
-          />
 
           <Route
             path="admin"
@@ -147,10 +150,18 @@ export default function App() {
             }
           />
           <Route
-            path="admin/chat"
+            path="admin/mail"
             element={
               <ProtectedRoute roles={['admin', 'accountant']}>
-                <ChatPage />
+                <AdminMailPage />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="admin/direction/:code"
+            element={
+              <ProtectedRoute roles={['admin', 'accountant', 'hr']}>
+                <AdminDirectionPage />
               </ProtectedRoute>
             }
           />
@@ -224,6 +235,14 @@ export default function App() {
             element={
               <ProtectedRoute roles={['admin', 'accountant']}>
                 <AdminWriteOffsPage />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="admin/reconciliation"
+            element={
+              <ProtectedRoute roles={['admin', 'accountant']}>
+                <AdminReconciliationPage />
               </ProtectedRoute>
             }
           />

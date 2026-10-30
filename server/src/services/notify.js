@@ -101,6 +101,81 @@ export function notifyChannelsStatus() {
   };
 }
 
+/**
+ * Предупреждение о том, что баланс подошёл к лимиту.
+ *
+ * Отправляется только в момент пересечения порога сверху вниз — а не на
+ * каждое списание. Иначе почта клиента заполняется письмами на 3–5 BYN.
+ * Возвращает true, если уведомление отправлено.
+ */
+export async function notifyLowBalanceCrossing({
+  companyId,
+  balanceBefore,
+  balanceAfter,
+  threshold,
+}) {
+  const before = Number(balanceBefore);
+  const after = Number(balanceAfter);
+  const limit = Number(threshold);
+  if (![before, after, limit].every(Number.isFinite)) return false;
+  if (!(before > limit && after <= limit)) return false;
+
+  const debt = after < 0 ? Math.abs(after) : 0;
+  const body =
+    debt > 0
+      ? `Баланс опустился до ${after.toFixed(2)} BYN, задолженность ${debt.toFixed(2)} BYN. ` +
+        'Пополните счёт, чтобы обработка заявок не остановилась.'
+      : `Баланс опустился до ${after.toFixed(2)} BYN — это ниже порога ${limit.toFixed(2)} BYN.`;
+
+  await notifyCompanyUsers(companyId, 'Баланс приблизился к лимиту', body);
+  await query('UPDATE companies SET low_balance_notified_at = NOW() WHERE id = :id', {
+    id: companyId,
+  });
+  return true;
+}
+
+/**
+ * Дневная сводка по балансу: одно письмо в день клиентам с задолженностью или
+ * низким балансом. force = true — отправить независимо от того, слали ли сегодня.
+ */
+export async function sendDailyBalanceDigests({ force = false } = {}) {
+  const companies = await query(
+    `SELECT c.id, c.name, c.balance, c.notify_threshold, c.last_digest_at,
+            (DATE(c.last_digest_at) = CURDATE()) AS sent_today
+       FROM companies c
+      WHERE c.status <> 'blocked'
+        AND c.balance <= c.notify_threshold
+        -- Только те, кто реально пользуется: у никогда не работавших клиентов
+        -- баланс 0, и без этого условия им бы каждый день падало «низкий баланс».
+        AND EXISTS (SELECT 1 FROM transactions t WHERE t.company_id = c.id)
+      ORDER BY c.balance ASC`,
+  );
+
+  const sent = [];
+  for (const c of companies) {
+    if (!force && Number(c.sent_today) === 1) continue;
+
+    const balance = Number(c.balance || 0);
+    const threshold = Number(c.notify_threshold || 0);
+    const debt = balance < 0 ? Math.abs(balance) : 0;
+    const title = debt > 0 ? 'Задолженность по балансу' : 'Низкий баланс';
+    const body =
+      debt > 0
+        ? `Задолженность: ${debt.toFixed(2)} BYN. Текущий баланс: ${balance.toFixed(2)} BYN.`
+        : `Текущий баланс: ${balance.toFixed(2)} BYN — ниже порога ${threshold.toFixed(2)} BYN.`;
+
+    try {
+      await notifyCompanyUsers(c.id, title, body);
+      await query('UPDATE companies SET last_digest_at = NOW() WHERE id = :id', { id: c.id });
+      sent.push({ companyId: c.id, name: c.name, balance });
+    } catch (err) {
+      console.error('[digest] не удалось отправить сводку компании', c.id, err.message);
+    }
+  }
+
+  return { checked: companies.length, sent: sent.length, companies: sent };
+}
+
 export async function sendDocumentByEmail({ to, subject, text, filePath, fileName }) {
   if (!fs.existsSync(filePath)) throw new Error('Файл документа не найден');
   return sendEmail({

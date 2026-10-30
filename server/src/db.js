@@ -25,9 +25,10 @@ export const config = {
     address:
       process.env.COMPANY_ADDRESS ||
       '220014, Московский район, г. Минск, ул. Попова, д. 24А, корпус 3, каб. 203',
-    bank: process.env.COMPANY_BANK || '',
-    iban: process.env.COMPANY_IBAN || '',
-    bic: process.env.COMPANY_BIC || '',
+    bank: process.env.COMPANY_BANK || 'МТБанк',
+    // Реквизиты только латиницей: с кириллическими «МТВК» платёж не пройдёт.
+    iban: process.env.COMPANY_IBAN || 'BY84MTBK30120001093300130382',
+    bic: process.env.COMPANY_BIC || 'MTBKBY22',
     accountantPhone: process.env.COMPANY_ACCOUNTANT_PHONE || '+375 (25) 505-69-17',
     directorName: process.env.COMPANY_DIRECTOR_NAME || 'Кастевич Владислав Павлович',
     directorTitle: process.env.COMPANY_DIRECTOR_TITLE || 'Директор',

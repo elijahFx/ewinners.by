@@ -1,5 +1,42 @@
 import jwt from 'jsonwebtoken';
 import { config, query } from '../db.js';
+import { unwrapSalesRenderPayload } from '../services/salesrender.js';
+
+/**
+ * Отвечает SalesRender «принято», но заказ не обрабатывает.
+ *
+ * Если отвечать ошибкой, SalesRender повторяет отправку 5 раз, а после серии
+ * неудач вообще приостанавливает доставку — и тогда теряются заказы ВСЕХ
+ * клиентов, а не только неопознанного. Поэтому принимаем событие, пишем его
+ * в журнал и оставляем без списания: ущерб ограничен одним клиентом.
+ */
+async function respondSkipped(res, payload, message) {
+  await logRejectedWebhook(payload, message);
+  return res.status(200).json({ ok: true, skipped: true, reason: 'client_not_resolved', message });
+}
+
+/**
+ * Записывает необработанный вебхук в журнал.
+ *
+ * Иначе такие случаи видны только в панели SalesRender: middleware отбивает
+ * запрос раньше, чем он доходит до обработчика, и в базе ничего не остаётся.
+ */
+async function logRejectedWebhook(payload, message) {
+  try {
+    const orderId = payload?.id || payload?.orderId || 'unknown';
+    await query(
+      `INSERT INTO crm_event_log (event_id, payload, status, error_message)
+       VALUES (:event_id, :payload, 'error', :error_message)`,
+      {
+        event_id: `sr-rejected-${orderId}`.slice(0, 128),
+        payload: JSON.stringify({ source: 'salesrender', ...payload }),
+        error_message: message,
+      },
+    );
+  } catch (err) {
+    console.warn('[salesrender] не удалось записать отклонённый вебхук:', err.message);
+  }
+}
 
 export function signToken(user) {
   return jwt.sign(
@@ -192,29 +229,32 @@ const COMPANY_COLUMNS = `id, name, unp, status, balance, credit_limit, notify_th
  */
 function extractSalesRenderId(payload) {
   if (!payload || typeof payload !== 'object') return '';
+  // Новый запрос триггера оборачивает заказ в ordersFetcher.orders[0] —
+  // разворачиваем так же, как это делает обработчик заказов.
+  const src = unwrapSalesRenderPayload(payload);
   const candidates = [
-    payload.salesrenderProjectId,
-    payload.salesrender_project_id,
-    payload.salesrenderId,
-    payload.salesrender_id,
-    payload.srProjectId,
-    payload.sr_project_id,
-    payload.srId,
-    payload.sr_id,
+    src.salesrenderProjectId,
+    src.salesrender_project_id,
+    src.salesrenderId,
+    src.salesrender_id,
+    src.srProjectId,
+    src.sr_project_id,
+    src.srId,
+    src.sr_id,
     // плоский вид
-    payload.project?.salesrenderId,
-    payload.project?.salesrender_id,
-    payload.project?.id,
-    payload.project?._id,
-    payload.clientId,
-    payload.client_id,
-    payload.organizationId,
-    payload.organization_id,
-    payload.orgId,
-    payload.org_id,
-    payload.company?.id,
-    payload.client?.id,
-    payload.organization?.id,
+    src.project?.salesrenderId,
+    src.project?.salesrender_id,
+    src.project?.id,
+    src.project?._id,
+    src.clientId,
+    src.client_id,
+    src.organizationId,
+    src.organization_id,
+    src.orgId,
+    src.org_id,
+    src.company?.id,
+    src.client?.id,
+    src.organization?.id,
     // GraphQL-вид вебхука SalesRender: { data: { project: { id } } }
     payload.data?.project?.salesrenderId,
     payload.data?.project?.salesrender_id,
@@ -242,11 +282,15 @@ function extractSalesRenderId(payload) {
  */
 function extractSalesRenderProjectValue(payload) {
   if (!payload || typeof payload !== 'object') return '';
+  const src = unwrapSalesRenderPayload(payload);
   const candidates = [
     payload.projectId,
     payload.project_id,
     payload.data?.projectId,
     payload.data?.project_id,
+    src.projectId,
+    src.project_id,
+    src.order?.projectId,
   ];
   for (const c of candidates) {
     if (c === null || c === undefined) continue;
@@ -263,7 +307,19 @@ async function findCompanyBySalesRenderId(id) {
     `SELECT ${COMPANY_COLUMNS} FROM companies WHERE salesrender_id = :sr LIMIT 1`,
     { sr: raw },
   );
-  return rows[0] || null;
+  if (rows[0]) return rows[0];
+
+  // У клиента может быть несколько проектов: основной ID и дополнительные.
+  const extra = await query(
+    `SELECT company_id FROM company_salesrender_projects WHERE salesrender_id = :sr LIMIT 1`,
+    { sr: raw },
+  );
+  if (!extra[0]) return null;
+  const byId = await query(
+    `SELECT ${COMPANY_COLUMNS} FROM companies WHERE id = :id LIMIT 1`,
+    { id: extra[0].company_id },
+  );
+  return byId[0] || null;
 }
 
 async function findCompanyByApiKey(apiKey) {
@@ -325,11 +381,10 @@ export async function salesrenderWebhookAuth(req, res, next) {
       if (srId) {
         company = await findCompanyBySalesRenderId(srId);
         if (!company) {
-          return res.status(404).json({
-            error:
-              `Клиент с ID проекта SalesRender «${srId}» не найден. ` +
-              'Укажите этот ID в карточке клиента: Клиенты → ID проекта SalesRender.',
-          });
+          const message =
+            `Клиент с ID проекта SalesRender «${srId}» не найден. ` +
+            'Укажите этот ID в карточке клиента: Клиенты → ID проекта SalesRender.';
+          return respondSkipped(res, payload, message);
         }
         authMode = 'salesrender_project_id';
         matchedSalesRenderId = srId;
@@ -381,30 +436,38 @@ export async function salesrenderWebhookAuth(req, res, next) {
               'Проставьте ей SalesRender ID, чтобы поиск шёл по ID.',
           );
         } else if (found.matches.length > 1) {
-          return res.status(409).json({
-            error: `Найдено несколько компаний по названию «${companyName}»`,
-            matches: found.matches.map((c) => ({ id: c.id, name: c.name, unp: c.unp })),
-          });
+          const message = `Найдено несколько компаний по названию «${companyName}»`;
+          return respondSkipped(
+            res,
+            payload,
+            `${message}: ${found.matches.map((c) => c.name).join(' / ')}`,
+          );
         } else {
-          return res.status(404).json({
-            error: `Компания с названием «${companyName}» не найдена в E-Winners`,
-          });
+          const message = `Компания с названием «${companyName}» не найдена в E-Winners`;
+          return respondSkipped(res, payload, message);
         }
       }
 
       if (!company) {
+        // Видно, что именно пришло в теле вебхука, когда клиента определить не удалось.
+        console.warn(
+          '[salesrender] клиент не определён. srId=%j projectValue=%j name=%j keys=%j body=%s',
+          srId || null,
+          srProjectValue || null,
+          companyName || null,
+          Object.keys(payload || {}),
+          JSON.stringify(payload).slice(0, 1200),
+        );
         // projectId пришёл, но ни одному клиенту не соответствует.
         if (srProjectValue) {
-          return res.status(404).json({
-            error:
-              `Клиент с ID проекта SalesRender «${srProjectValue}» не найден. ` +
-              'Укажите этот ID в карточке клиента: Клиенты → ID проекта в SalesRender.',
-          });
+          const message =
+            `Клиент с ID проекта SalesRender «${srProjectValue}» не найден. ` +
+            'Укажите этот ID в карточке клиента: Клиенты → ID проекта в SalesRender.';
+          return respondSkipped(res, payload, message);
         }
-        return res.status(400).json({
-          error:
-            'В теле webhook нет ID проекта SalesRender. Передайте поле projectId (или project.id / salesrenderId) — по нему ищем клиента в E-Winners.',
-        });
+        const message =
+          'В теле webhook нет ID проекта SalesRender. Передайте поле projectId (или project.id / salesrenderId) — по нему ищем клиента в E-Winners.';
+        return respondSkipped(res, payload, message);
       }
     } else {
       const rows = await query(

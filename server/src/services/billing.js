@@ -1,5 +1,6 @@
 import { query, withTransaction } from '../db.js';
 import { emitBalanceChanged } from './balanceEvents.js';
+import { notifyLowBalanceCrossing } from './notify.js';
 
 /**
  * Подбор действующего тарифа.
@@ -125,6 +126,13 @@ export async function applyBalanceChange({
   employeeName = null,
   comment = null,
   createdBy = null,
+  // Детали заказа SalesRender (для детализации и выгрузки в Excel)
+  clientOrderNumber = null,
+  customerName = null,
+  customerPhone = null,
+  cartTotal = null,
+  isCross = 0,
+  isUpsell = 0,
 }) {
   const absAmount = Math.abs(Number(amount));
   if (!(absAmount > 0)) throw new Error('Сумма должна быть больше нуля');
@@ -135,7 +143,7 @@ export async function applyBalanceChange({
   };
 
   const companies = await exec(
-    'SELECT id, balance, credit_limit, low_balance_action, status FROM companies WHERE id = ? FOR UPDATE',
+    'SELECT id, balance, credit_limit, low_balance_action, status, notify_threshold FROM companies WHERE id = ? FOR UPDATE',
     [companyId],
   );
   const company = companies[0];
@@ -160,8 +168,9 @@ export async function applyBalanceChange({
   const result = await exec(
     `INSERT INTO transactions
       (company_id, project_id, invoice_id, type, category, amount, balance_before, balance_after,
-       service_id, tariff_id, quantity, unit_price, crm_event_id, employee_name, comment, created_by)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       service_id, tariff_id, quantity, unit_price, crm_event_id, employee_name, comment, created_by,
+       client_order_number, customer_name, customer_phone, cart_total, is_cross, is_upsell)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       companyId,
       projectId,
@@ -179,6 +188,12 @@ export async function applyBalanceChange({
       employeeName,
       comment,
       createdBy,
+      clientOrderNumber,
+      customerName,
+      customerPhone,
+      cartTotal,
+      isCross ? 1 : 0,
+      isUpsell ? 1 : 0,
     ],
   );
 
@@ -197,19 +212,47 @@ export async function applyBalanceChange({
     transactionId: result.insertId,
     balanceBefore,
     balanceAfter,
+    notifyThreshold: Number(company.notify_threshold ?? 0),
   };
 }
 
+/**
+ * Проверяет пересечение порога уже после фиксации транзакции.
+ *
+ * Внутри транзакции строку companies трогать нельзя — она под блокировкой
+ * FOR UPDATE, и запись из другого соединения повиснет до коммита.
+ */
+async function checkLowBalanceCrossing(companyId, applied) {
+  if (!applied) return;
+  try {
+    await notifyLowBalanceCrossing({
+      companyId,
+      balanceBefore: applied.balanceBefore,
+      balanceAfter: applied.balanceAfter,
+      threshold: applied.notifyThreshold,
+    });
+  } catch (err) {
+    console.warn('[balance] не удалось отправить предупреждение о лимите:', err.message);
+  }
+}
+
 export async function creditBalance(params) {
-  return withTransaction((conn) => applyBalanceChange({ ...params, conn, type: 'credit' }));
+  const applied = await withTransaction((conn) =>
+    applyBalanceChange({ ...params, conn, type: 'credit' }),
+  );
+  await checkLowBalanceCrossing(params.companyId, applied);
+  return applied;
 }
 
 export async function debitBalance(params) {
-  return withTransaction((conn) => applyBalanceChange({ ...params, conn, type: 'debit' }));
+  const applied = await withTransaction((conn) =>
+    applyBalanceChange({ ...params, conn, type: 'debit' }),
+  );
+  await checkLowBalanceCrossing(params.companyId, applied);
+  return applied;
 }
 
 export { notifyCompanyUsers } from './notify.js';
-
 export { emitBalanceChanged } from './balanceEvents.js';
 
 export async function audit(userId, action, entityType, entityId, details) {

@@ -43,6 +43,8 @@ export default function AdminWriteOffsPage() {
     to: localDate(new Date()),
     companyId: '',
     q: '',
+    type: 'debit',
+    source: '',
   })
   const [debouncedQ, setDebouncedQ] = useState('')
   const [items, setItems] = useState([])
@@ -60,14 +62,16 @@ export default function AdminWriteOffsPage() {
 
   const query = useMemo(() => {
     const p = new URLSearchParams()
-    p.set('type', 'debit')
+    // Пусто — показываем всё: и списания, и зачисления.
+    if (filters.type) p.set('type', filters.type)
+    if (filters.source) p.set('source', filters.source)
     if (filters.from) p.set('from', filters.from)
     if (filters.to) p.set('to', filters.to)
     if (filters.companyId) p.set('companyId', filters.companyId)
     if (debouncedQ) p.set('q', debouncedQ)
     p.set('limit', '1000')
     return p.toString()
-  }, [filters.from, filters.to, filters.companyId, debouncedQ])
+  }, [filters.type, filters.source, filters.from, filters.to, filters.companyId, debouncedQ])
 
   useEffect(() => {
     api('/api/admin/companies')
@@ -107,6 +111,14 @@ export default function AdminWriteOffsPage() {
   const showSkeleton = loading && !loaded
   const debitTotal = Number(totals?.debit_total || 0)
   const debitCount = Number(totals?.debit_count || 0)
+  const creditTotal = Number(totals?.credit_total || 0)
+  const creditCount = Number(totals?.credit_count || 0)
+
+  // Карточки подстраиваются под выбранный тип операции.
+  const onlyCredits = filters.type === 'credit'
+  const showBoth = !filters.type
+  const mainTotal = onlyCredits ? creditTotal : debitTotal
+  const mainCount = onlyCredits ? creditCount : debitCount
   const companyName = companies.find((c) => String(c.id) === String(filters.companyId))?.name
 
   return (
@@ -115,22 +127,27 @@ export default function AdminWriteOffsPage() {
         <div>
           <h1 className="m-0 text-[28px] font-bold leading-tight text-white">Списания</h1>
           <p className="mt-1 text-sm text-[#9db8d4]">
-            История списаний с баланса клиентов: услуги, суммы и остаток после операции.
+            История операций по балансу клиентов: списания и зачисления, суммы и остаток после операции.
           </p>
         </div>
       </div>
 
       <div className="grid gap-3 sm:grid-cols-3">
         <div className="rounded-2xl border border-white/[0.06] bg-[#0b1f3a] p-4">
-          <div className="text-xs font-bold uppercase tracking-wide text-[#9db8d4]">Списано за период</div>
-          <div className="mt-2 text-xl font-bold text-[#ff9b9b]">
-            {showSkeleton ? <Skeleton className="h-6 w-32" /> : money(debitTotal)}
+          <div className="text-xs font-bold uppercase tracking-wide text-[#9db8d4]">
+            {onlyCredits ? 'Зачислено за период' : 'Списано за период'}
           </div>
+          <div className={`mt-2 text-xl font-bold ${onlyCredits ? 'text-[#7dffc2]' : 'text-[#ff9b9b]'}`}>
+            {showSkeleton ? <Skeleton className="h-6 w-32" /> : money(mainTotal)}
+          </div>
+          {showBoth ? (
+            <div className="mt-1 text-[11px] text-[#9db8d4]">зачислено {money(creditTotal)}</div>
+          ) : null}
         </div>
         <div className="rounded-2xl border border-white/[0.06] bg-[#0b1f3a] p-4">
           <div className="text-xs font-bold uppercase tracking-wide text-[#9db8d4]">Операций</div>
           <div className="mt-2 text-xl font-bold text-white">
-            {showSkeleton ? <Skeleton className="h-6 w-20" /> : debitCount}
+            {showSkeleton ? <Skeleton className="h-6 w-20" /> : showBoth ? debitCount + creditCount : mainCount}
           </div>
         </div>
         <div className="rounded-2xl border border-white/[0.06] bg-[#0b1f3a] p-4">
@@ -142,7 +159,31 @@ export default function AdminWriteOffsPage() {
       </div>
 
       <div className="rounded-2xl border border-white/[0.06] bg-[#0b1f3a] p-4 sm:p-5">
-        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
+          <label className="block text-xs font-bold uppercase tracking-wide text-[#9db8d4]">
+            Тип операции
+            <select
+              className={fieldClass}
+              value={filters.type}
+              onChange={(e) => setFilters((prev) => ({ ...prev, type: e.target.value }))}
+            >
+              <option value="debit">Списания</option>
+              <option value="credit">Зачисления</option>
+              <option value="">Все операции</option>
+            </select>
+          </label>
+          <label className="block text-xs font-bold uppercase tracking-wide text-[#9db8d4]">
+            Источник
+            <select
+              className={fieldClass}
+              value={filters.source}
+              onChange={(e) => setFilters((prev) => ({ ...prev, source: e.target.value }))}
+            >
+              <option value="">Все</option>
+              <option value="auto">Автоматические</option>
+              <option value="manual">Ручные</option>
+            </select>
+          </label>
           <label className="block text-xs font-bold uppercase tracking-wide text-[#9db8d4]">
             С
             <input
@@ -254,7 +295,8 @@ export default function AdminWriteOffsPage() {
                       {row.unit_price == null ? '—' : money(row.unit_price)}
                     </td>
                     <td className="px-3 py-3 whitespace-nowrap font-semibold text-[#ff9b9b]">
-                      −{money(row.amount)}
+                      {row.type === 'credit' ? '+' : '−'}
+                      {money(row.amount)}
                     </td>
                     <td className="px-3 py-3 whitespace-nowrap text-[#7dffc2]">
                       {row.balance_after == null ? '—' : money(row.balance_after)}

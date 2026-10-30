@@ -1,0 +1,8 @@
+User-agent: *
+Allow: /
+
+# Private areas: client cabinet and account pages
+Disallow: /cabinet
+Disallow: /account
+
+Sitemap: https://ewinners.by/sitemap.xml

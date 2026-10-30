@@ -24,6 +24,8 @@ img { max-width: 100%; }
 .logo:hover .logo-image { transform: scale(1.08); }
 .nav { display: flex; align-items: center; gap: 16px; color: rgb(51, 55, 70); font-size: 0.9rem; }
 .nav a, .nav-dropdown-button { transition: color 0.18s; }
+/* Вход и кабинет для мобильного меню: на широком экране их заменяют кнопки справа */
+.nav-signin { display: none; }
 .nav a:hover, .nav-dropdown-button:hover { color: var(--blue); }
 .nav-dropdown { position: relative; }
 .nav-dropdown-button { display: inline-flex; align-items: center; gap: 5px; min-height: 38px; padding: 0px; border: 0px; color: inherit; background: transparent; cursor: pointer; font-weight: 500; }
@@ -93,10 +95,14 @@ img { max-width: 100%; }
 .home-principle svg { margin-bottom: 20px; color: rgb(60, 166, 255); }
 .home-principle strong { display: block; margin-bottom: 9px; font-size: 1.04rem; line-height: 1.28; }
 .home-principle p { margin: 0px; color: rgba(224, 239, 255, 0.67); font-size: 0.92rem; line-height: 1.5; }
-.home-principle.home-rating-card { display: block; min-height: 180px; }
-.home-principle.home-rating-card > strong { margin: 16px 0px 6px; font-size: 2.7rem; }
-.home-principle.home-rating-card span { color: rgb(174, 224, 255); font-size: 0.8rem; font-weight: 800; text-transform: uppercase; }
-.home-principle.home-rating-card blockquote { margin: 18px 0px 0px; color: rgba(224, 239, 255, 0.67); font-size: 0.88rem; line-height: 1.45; }
+.home-principle.home-rating-card { position: relative; grid-column: 1; grid-row: span 2; display: flex; flex-direction: column; justify-content: space-between; min-height: 0px; overflow: hidden; padding: 28px; border-color: rgba(85, 163, 244, 0.3); background: radial-gradient(circle at 92% 80%, rgba(22, 118, 222, 0.19), transparent 46%), linear-gradient(160deg, rgba(9, 37, 73, 0.96), rgba(4, 22, 48, 0.94)); }
+.home-principle.home-rating-card:after { position: absolute; right: -94px; bottom: 38px; width: 280px; height: 280px; border: 1px solid rgba(69, 159, 249, 0.13); border-radius: 50%; content: ""; pointer-events: none; }
+.home-rating-main, .home-rating-link { position: relative; z-index: 1; }
+.home-rating-main > span { color: rgb(174, 224, 255); font-size: 0.8rem; font-weight: 800; letter-spacing: 0.05em; text-transform: uppercase; }
+.home-rating-main > strong { display: block; margin: 28px 0px 4px; font-size: clamp(3.7rem, 5vw, 5.3rem); letter-spacing: -0.06em; line-height: 1; }
+.home-rating-main > p { margin: 0px; color: rgba(224, 239, 255, 0.76); font-size: 0.96rem; white-space: nowrap; }
+.home-rating-link { display: inline-flex; align-items: center; justify-content: space-between; gap: 12px; padding-top: 20px; border-top: 1px solid rgba(126, 192, 249, 0.23); color: rgb(188, 229, 255); font-size: 0.84rem; font-weight: 700; text-transform: none; }
+.home-rating-link svg { flex: 0 0 auto; margin: 0px; color: rgb(114, 186, 255); }
 .home-glass-button { display: inline-flex; align-items: center; justify-content: center; min-height: 44px; padding: 0px 22px; border: 1px solid rgba(255, 255, 255, 0.2); border-radius: 999px; color: var(--white); background: rgba(255, 255, 255, 0.07); box-shadow: rgba(255, 255, 255, 0.1) 0px 1px inset; font-weight: 800; backdrop-filter: blur(18px); transition: transform 0.18s, background 0.18s; }
 .home-glass-button:hover { transform: translateY(-1px); background: rgba(255, 255, 255, 0.13); }
 .home-glass-grid { display: grid; grid-template-columns: repeat(4, minmax(0px, 1fr)); grid-auto-rows: minmax(176px, auto); gap: 14px; margin-top: clamp(88px, 9vh, 112px); }
@@ -107,6 +113,7 @@ img { max-width: 100%; }
 .home-rating-card { grid-row: span 2; display: flex; flex-direction: column; min-height: 366px; transition: transform 0.18s, border-color 0.18s, background 0.18s; }
 .home-call-center-card { grid-area: 2 / 4; }
 .home-rating-card:hover { transform: translateY(-3px); border-color: rgba(143, 210, 255, 0.55); background: linear-gradient(145deg, rgba(96, 181, 255, 0.2), rgba(255, 255, 255, 0.06)), rgba(2, 12, 38, 0.42); }
+.home-principle.home-rating-card:hover { background: radial-gradient(circle at 92% 80%, rgba(36, 138, 240, 0.24), transparent 46%), linear-gradient(160deg, rgba(12, 47, 88, 0.96), rgba(5, 27, 57, 0.94)); }
 .home-rating-top { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 23px; color: rgba(255, 255, 255, 0.78); font-size: 0.82rem; font-weight: 900; text-transform: uppercase; }
 .home-rating-card > strong { margin-bottom: 8px; font-size: clamp(3.4rem, 5vw, 5.2rem); line-height: 0.9; }
 .home-rating-card p { color: rgba(255, 255, 255, 0.78); font-size: 1.02rem; }
@@ -123,6 +130,7 @@ img { max-width: 100%; }
 .partner-logo-list { display: flex; align-items: center; gap: 36px; margin-top: 34px; }
 .partner-logo-link { display: inline-flex; align-items: center; justify-content: flex-start; width: 150px; min-height: 95px; opacity: 0.9; transition: opacity 0.18s, transform 0.18s; }
 .partner-logo-link img { display: block; width: 150px; height: 95px; object-fit: contain; }
+.partner-logo-link-square img { width: 124px; height: 124px; }
 .partner-logo-link:hover { opacity: 1; transform: translateY(-2px); }
 .partner-logo-link:active { transform: translateY(0px); }
 .partner-logo-link:focus-visible { border-radius: 12px; outline: rgba(143, 210, 255, 0.72) solid 3px; outline-offset: 6px; }
@@ -560,6 +568,17 @@ h3 { color: var(--primary); font-size: 1.45rem; line-height: 1.15; letter-spacin
 @media (max-width: 1080px) {
   .nav, .phone-link, .account-button, .header .primary-button { display: none; }
   .menu-button { display: inline-flex; }
+  /* Дублирующие пункты широкого меню в мобильном не нужны */
+  .header .nav .nav-wide-only { display: none; }
+  /* А вход и кабинет — наоборот, показываем только здесь */
+  .header .nav.is-open .nav-signin {
+    display: grid;
+    gap: 2px;
+    margin-top: 6px;
+    padding-top: 8px;
+    border-top: 1px solid rgba(213, 220, 235, 0.9);
+  }
+  .home-shell .header .nav.is-open .nav-signin { border-top-color: rgba(127, 195, 255, 0.25); }
   .header .nav.is-open { position: absolute; top: calc(100% + 12px); right: 0px; left: 0px; z-index: 1; display: grid; gap: 2px; padding: 10px; border: 1px solid rgba(213, 220, 235, 0.9); border-radius: 16px; color: var(--primary); background: rgba(255, 255, 255, 0.97); box-shadow: rgba(8, 3, 49, 0.18) 0px 20px 46px; backdrop-filter: blur(18px); }
   .header .nav.is-open a { padding: 13px 14px; border-radius: 10px; font-size: 1rem; font-weight: 700; }
   .header .nav.is-open a:hover { color: var(--blue); background: var(--blue-wash); }
@@ -631,6 +650,8 @@ h3 { color: var(--primary); font-size: 1.45rem; line-height: 1.15; letter-spacin
   .home-partners { width: calc(100% - 32px); padding-top: 72px; }
   .partner-logo-list { margin-top: 26px; }
   .partner-logo-link, .partner-logo-link img { width: 132px; height: auto; }
+  .partner-logo-link-square img { width: 108px; height: 108px; }
+  .home-principle.home-rating-card { grid-column: auto; grid-row: auto; min-height: 280px; }
   h1 { font-size: 2.55rem; }
   .hr-hero-content h1 { width: 100%; max-width: 100%; line-height: 1.12; text-wrap: wrap; overflow-wrap: anywhere; font-size: clamp(1.86rem, 7.8vw, 2.35rem) !important; }
   .hr-hero-unified .hr-hero-content h1 { font-size: clamp(1.86rem, 7.8vw, 2.35rem) !important; }
