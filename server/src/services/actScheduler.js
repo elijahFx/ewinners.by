@@ -21,9 +21,9 @@ let timer = null;
 let lastRunKey = null;
 let running = false;
 
-/** Время Минска (UTC+3), независимо от таймзоны сервера. */
+/** Сервер и MySQL работают в часовом поясе Минска (UTC+3). */
 function nowMinsk() {
-  return dayjs().utcOffset(180);
+  return dayjs();
 }
 
 async function exclusive(fn) {
