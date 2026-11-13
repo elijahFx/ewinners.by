@@ -203,9 +203,9 @@ export default function DocumentsPage() {
 
       {actPanelOpen ? (
         <form className="cab-card ew-docs-period" onSubmit={requestAct}>
-          <div className="ew-docs-period-title">Запросить акт за месяц</div>
+          <div className="ew-docs-period-title">Акт за месяц</div>
           <div className="ew-docs-period-fields">
-            <label>
+            <label className="ew-docs-act-month">
               <span>Месяц</span>
               <input
                 type="month"
@@ -227,9 +227,9 @@ export default function DocumentsPage() {
               Отмена
             </button>
           </div>
-          <p style={{ margin: '10px 0 0', color: '#9db8d4', fontSize: 13 }}>
-            Акт собирается только по фактическим списаниям с баланса за выбранный месяц. Если
-            списаний не было, акт не формируется.
+          <p className="ew-docs-period-note">
+            Только по фактическим списаниям с баланса. Если списаний не было — акт не
+            формируется.
           </p>
         </form>
       ) : null}

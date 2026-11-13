@@ -730,11 +730,24 @@ select option {
   color: rgba(210, 228, 248, 0.72);
 }
 
-.ew-docs-period-fields input[type='date'] {
+.ew-docs-period-fields input[type='date'],
+.ew-docs-period-fields input[type='month'] {
   min-height: 42px;
   padding: 0 12px;
   border-radius: 12px;
   color-scheme: dark;
+}
+
+.ew-docs-period-fields label.ew-docs-act-month {
+  min-width: 200px;
+}
+
+.ew-docs-period-note {
+  max-width: 680px;
+  margin: 10px 0 0;
+  color: rgba(210, 228, 248, 0.62);
+  font-size: 0.8rem;
+  line-height: 1.45;
 }
 
 .cab-empty {
