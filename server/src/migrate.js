@@ -1,4 +1,5 @@
 import { pool } from './db.js';
+import { listAccounts } from './services/accounts.js';
 
 const statements = [
   `CREATE TABLE IF NOT EXISTS companies (
@@ -10,6 +11,8 @@ const statements = [
     iban VARCHAR(64) NULL,
     bic VARCHAR(32) NULL,
     status ENUM('active','suspended','blocked') NOT NULL DEFAULT 'active',
+    direction ENUM('hr','digital','kc') NOT NULL DEFAULT 'kc',
+    is_oneoff TINYINT(1) NOT NULL DEFAULT 0,
     balance DECIMAL(14,2) NOT NULL DEFAULT 0,
     credit_limit DECIMAL(14,2) NOT NULL DEFAULT 0,
     min_balance DECIMAL(14,2) NOT NULL DEFAULT 0,
@@ -277,6 +280,73 @@ const statements = [
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT fk_chat_att_msg FOREIGN KEY (message_id) REFERENCES chat_messages(id) ON DELETE CASCADE
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+
+  // Финансовое состояние клиента и остановка его проектов в SalesRender.
+  `CREATE TABLE IF NOT EXISTS company_financial_state (
+    company_id INT NOT NULL PRIMARY KEY,
+    blocked_by_balance TINYINT(1) NOT NULL DEFAULT 0,
+    applied TINYINT(1) NOT NULL DEFAULT 0,
+    dry_run TINYINT(1) NOT NULL DEFAULT 0,
+    reason VARCHAR(32) NULL,
+    available DECIMAL(14,2) NULL,
+    pending_count INT NOT NULL DEFAULT 0,
+    pending_amount DECIMAL(14,2) NOT NULL DEFAULT 0,
+    attempts INT NOT NULL DEFAULT 0,
+    last_error TEXT NULL,
+    blocked_at DATETIME NULL,
+    unblocked_at DATETIME NULL,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    CONSTRAINT fk_cfs_company FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE CASCADE
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+
+  // Какие проекты SalesRender мы архивировали сами.
+  `CREATE TABLE IF NOT EXISTS salesrender_project_state (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    company_id INT NOT NULL,
+    salesrender_project_id VARCHAR(64) NOT NULL,
+    archived_by_us TINYINT(1) NOT NULL DEFAULT 0,
+    archived_at DATETIME NULL,
+    unarchived_at DATETIME NULL,
+    attempts INT NOT NULL DEFAULT 0,
+    last_error TEXT NULL,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uq_sr_project (company_id, salesrender_project_id),
+    CONSTRAINT fk_srps_company FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE CASCADE
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+
+  // Пограничная зона: заказы, которые не удалось списать из-за лимита.
+  `CREATE TABLE IF NOT EXISTS salesrender_pending_charges (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    company_id INT NOT NULL,
+    project_id INT NULL,
+    salesrender_project_id VARCHAR(64) NULL,
+    order_id VARCHAR(64) NOT NULL,
+    event_id VARCHAR(128) NOT NULL,
+    kind ENUM('accepted','delivered') NOT NULL DEFAULT 'accepted',
+    service_id INT NULL,
+    tariff_id INT NULL,
+    amount DECIMAL(14,2) NOT NULL,
+    status ENUM('pending','charging','charged','canceled') NOT NULL DEFAULT 'pending',
+    reason ENUM('insufficient_funds','overdraft_limit','manual') NOT NULL DEFAULT 'insufficient_funds',
+    employee_name VARCHAR(255) NULL,
+    comment VARCHAR(255) NULL,
+    payload JSON NULL,
+    details JSON NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    charged_at DATETIME NULL,
+    transaction_id INT NULL,
+    canceled_at DATETIME NULL,
+    canceled_by INT NULL,
+    attempts INT NOT NULL DEFAULT 0,
+    last_error TEXT NULL,
+    UNIQUE KEY uq_pending_event (event_id),
+    KEY idx_pending_company (company_id, status, created_at),
+    CONSTRAINT fk_spc_company FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE CASCADE,
+    CONSTRAINT fk_spc_project FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE SET NULL,
+    CONSTRAINT fk_spc_service FOREIGN KEY (service_id) REFERENCES services(id) ON DELETE SET NULL,
+    CONSTRAINT fk_spc_tariff FOREIGN KEY (tariff_id) REFERENCES tariffs(id) ON DELETE SET NULL
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
 ];
 
 async function ensureColumn(table, column, definition) {
@@ -290,6 +360,61 @@ async function ensureColumn(table, column, definition) {
   );
   if (Number(rows[0]?.c) === 0) {
     await pool.execute(`ALTER TABLE \`${table}\` ADD COLUMN \`${column}\` ${definition}`);
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Первичное распределение клиентов по направлениям.
+ *
+ * У старых клиентов направления не было. Берём последний счёт с явно указанным
+ * расчётным счётом: если он выставлен на счёт Digital — клиент Digital, и т.д.
+ * Клиенты без таких счетов остаются в КЦ. Дальше направление меняется вручную
+ * в карточке клиента.
+ */
+async function backfillCompanyDirections() {
+  const byIban = new Map(listAccounts().map((account) => [account.iban, account.code]));
+  const [rows] = await pool.query(
+    `SELECT company_id, account_iban, id
+       FROM invoices
+      WHERE account_iban IS NOT NULL
+      ORDER BY id ASC`,
+  );
+
+  // Считаем, в каком направлении у клиента больше выставленных счетов.
+  // При равенстве берём направление самого свежего счёта.
+  const byCompany = new Map();
+  for (const row of rows) {
+    const iban = String(row.account_iban || '').replace(/\s+/g, '').toUpperCase();
+    const direction = byIban.get(iban);
+    if (!direction) continue;
+    let entry = byCompany.get(row.company_id);
+    if (!entry) {
+      entry = { counts: new Map(), lastDirection: null };
+      byCompany.set(row.company_id, entry);
+    }
+    entry.counts.set(direction, (entry.counts.get(direction) || 0) + 1);
+    entry.lastDirection = direction;
+  }
+
+  for (const [companyId, entry] of byCompany) {
+    let best = null;
+    let bestCount = -1;
+    for (const [direction, count] of entry.counts) {
+      if (count > bestCount) {
+        best = direction;
+        bestCount = count;
+      }
+    }
+    const tied = [...entry.counts.entries()]
+      .filter(([, count]) => count === bestCount)
+      .map(([direction]) => direction);
+    const direction = tied.includes(entry.lastDirection) ? entry.lastDirection : best;
+    await pool.execute(
+      `UPDATE companies SET direction = ? WHERE id = ? AND direction = 'kc'`,
+      [direction, companyId],
+    );
   }
 }
 
@@ -301,6 +426,33 @@ export async function migrate() {
   await ensureColumn('users', 'notify_email', 'TINYINT(1) NOT NULL DEFAULT 1 AFTER must_set_password');
   await ensureColumn('users', 'notify_telegram', 'TINYINT(1) NOT NULL DEFAULT 0 AFTER notify_email');
   await ensureColumn('users', 'telegram_chat_id', 'VARCHAR(64) NULL AFTER notify_telegram');
+  // Направление клиента: HR, Digital или КЦ. Именно по нему рабочие места
+  // показывают «своих» клиентов и счета.
+  const directionAdded = await ensureColumn(
+    'companies',
+    'direction',
+    "ENUM('hr','digital','kc') NOT NULL DEFAULT 'kc' AFTER status",
+  );
+  if (directionAdded) await backfillCompanyDirections();
+
+  // Флаги автоматической остановки: чтобы не перепутать с ручной блокировкой
+  // и снимать приостановку только с того, что приостановили мы.
+  await ensureColumn(
+    'companies',
+    'is_oneoff',
+    'TINYINT(1) NOT NULL DEFAULT 0 AFTER direction',
+  );
+  await ensureColumn(
+    'companies',
+    'suspended_by_balance',
+    'TINYINT(1) NOT NULL DEFAULT 0 AFTER direction',
+  );
+  await ensureColumn(
+    'projects',
+    'paused_by_balance',
+    'TINYINT(1) NOT NULL DEFAULT 0 AFTER status',
+  );
+
   await ensureColumn('companies', 'api_key', 'VARCHAR(96) NULL UNIQUE AFTER manager_email');
   await ensureColumn('companies', 'api_key_created_at', 'DATETIME NULL AFTER api_key');
   // Отдел выкупа: клиенту дополнительно списывается 1,50 BYN за выкупленный заказ.
@@ -326,6 +478,16 @@ export async function migrate() {
 
   // Расчётный счёт, на который выставлен счёт
   await pool.execute('ALTER TABLE invoices ADD COLUMN account_iban VARCHAR(64) NULL').catch(() => {});
+
+  // Один месячный акт на клиента: ACT-ГГГГММ-<id>. Уникальный ключ защищает
+  // от дублей, если планировщик и ручной запуск совпадут по времени.
+  try {
+    await pool.execute(
+      'ALTER TABLE documents ADD UNIQUE KEY uq_documents_company_type_number (company_id, type, number)',
+    );
+  } catch {
+    /* индекс уже есть */
+  }
 
   // Новая роль HR: сотрудник направления, видит только свою страницу
   await pool.execute(

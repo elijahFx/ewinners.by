@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useState } from 'react'
 import { api } from '../../api'
+import { DIRECTIONS, useDirection } from '../../DirectionContext'
 import { statusLabel } from '../../statusLabels'
 import useLiveBalance from '../../useLiveBalance'
+import SearchField from '../../ui/SearchField'
 import EditCompanyModal from './EditCompanyModal'
 
 const empty = {
@@ -19,6 +21,13 @@ const empty = {
   managerPhone: '',
   managerEmail: '',
   buyoutEnabled: false,
+  direction: 'kc',
+}
+
+const DIRECTION_LABEL = { hr: 'HR', digital: 'Digital', kc: 'КЦ' }
+
+function directionLabel(code) {
+  return DIRECTION_LABEL[code] || 'КЦ'
 }
 
 /** SalesRender ID можно поправить прямо в списке — по нему ищется клиент при списании. */
@@ -83,7 +92,10 @@ function SalesRenderIdCell({ company, onSave }) {
   )
 }
 
-export default function AdminCompaniesPage() {
+export default function AdminCompaniesPage({ readOnly = false }) {
+  const { direction } = useDirection()
+  const directionName = DIRECTIONS.find((d) => d.code === direction)?.label || 'КЦ'
+  const canEdit = !readOnly
   const [items, setItems] = useState([])
   const [form, setForm] = useState(empty)
   const [busy, setBusy] = useState(false)
@@ -125,16 +137,25 @@ export default function AdminCompaniesPage() {
   }, [items, filters]);
 
   async function load() {
-    const data = await api('/api/admin/companies')
-    setItems(data.items)
+    const data = await api(
+      `/api/admin/companies?direction=${encodeURIComponent(direction)}`,
+    )
+    setItems(data.items || [])
   }
 
   useEffect(() => {
     load().catch((e) => alert(e.message))
-  }, [])
+  }, [direction])
 
   // Балансы клиентов в таблице обновляются без перезагрузки.
   useLiveBalance(() => load().catch(() => {}))
+
+  // Новый клиент создаётся в текущем направлении; админ может сменить его
+  // в форме, но по умолчанию подставляется открытое направление.
+  useEffect(() => {
+    if (!canEdit) return
+    setForm((prev) => ({ ...prev, direction }))
+  }, [direction, canEdit])
 
   useEffect(() => {
     const unp = String(form.unp || '').replace(/\D/g, '')
@@ -266,17 +287,19 @@ export default function AdminCompaniesPage() {
     <>
       <div className="cab-page-head">
         <div>
-          <h1>Клиенты (юрлица)</h1>
+          <h1>Клиенты направления {directionName}</h1>
           <p>
-            Введите УНП — название и адрес подтянутся из реестра. По IBAN определится банк и БИК.
-            ID проекта в SalesRender можно изменить прямо в таблице.
+            {canEdit
+              ? 'Введите УНП — название и адрес подтянутся из реестра. По IBAN определится банк и БИК. Показаны только клиенты этого направления.'
+              : 'Клиенты только выбранного направления. Управление доступно администратору.'}
           </p>
         </div>
       </div>
 
       <div className="cab-grid">
-        <div className="cab-card span-4">
-          <form className="cab-form grid-2" onSubmit={create}>
+        {canEdit ? (
+          <div className="cab-card span-4">
+            <form className="cab-form grid-2" onSubmit={create}>
             <label>
               УНП
               <input
@@ -296,6 +319,17 @@ export default function AdminCompaniesPage() {
                 onChange={(e) => setForm({ ...form, name: e.target.value })}
                 placeholder="Заполнится по УНП"
               />
+            </label>
+            <label>
+              Направление
+              <select
+                value={form.direction}
+                onChange={(e) => setForm({ ...form, direction: e.target.value })}
+              >
+                <option value="hr">HR</option>
+                <option value="digital">Digital</option>
+                <option value="kc">КЦ</option>
+              </select>
             </label>
             <label style={{ gridColumn: '1 / -1' }}>
               ID проекта в SalesRender (обязательно)
@@ -384,8 +418,9 @@ export default function AdminCompaniesPage() {
                 Создать клиента
               </button>
             </div>
-          </form>
-        </div>
+            </form>
+          </div>
+        ) : null}
 
         <div className="cab-card span-4">
           <div
@@ -394,11 +429,11 @@ export default function AdminCompaniesPage() {
           >
             <label className="cab-muted" style={{ flex: '1 1 260px', fontSize: '0.72rem', fontWeight: 800, letterSpacing: '0.04em' }}>
               ПОИСК
-              <input
+              <SearchField
+                className="mt-1.5"
                 value={filters.q}
                 onChange={(e) => setFilters((f) => ({ ...f, q: e.target.value }))}
                 placeholder="Название, УНП, ID проекта, IBAN, менеджер…"
-                style={{ marginTop: 6, width: '100%' }}
               />
             </label>
             <label className="cab-muted" style={{ fontSize: '0.72rem', fontWeight: 800, letterSpacing: '0.04em' }}>
@@ -461,6 +496,7 @@ export default function AdminCompaniesPage() {
                 <tr>
                   <th>ID</th>
                   <th>Компания</th>
+                  <th>Направление</th>
                   <th>ID проекта в SR</th>
                   <th>УНП</th>
                   <th>Баланс</th>
@@ -475,14 +511,21 @@ export default function AdminCompaniesPage() {
                 {visible.map((c) => (
                   <tr
                     key={c.id}
-                    onClick={() => setEditingId(c.id)}
-                    title="Нажмите, чтобы открыть карточку клиента"
-                    style={{ cursor: 'pointer' }}
+                    onClick={canEdit ? () => setEditingId(c.id) : undefined}
+                    title={canEdit ? 'Нажмите, чтобы открыть карточку клиента' : undefined}
+                    style={canEdit ? { cursor: 'pointer' } : undefined}
                   >
                     <td>{c.id}</td>
                     <td>{c.name}</td>
+                    <td>
+                      <span className="cab-chip">{directionLabel(c.direction)}</span>
+                    </td>
                     <td onClick={(e) => e.stopPropagation()}>
-                      <SalesRenderIdCell company={c} onSave={saveSalesRenderId} />
+                      {canEdit ? (
+                        <SalesRenderIdCell company={c} onSave={saveSalesRenderId} />
+                      ) : (
+                        <span className="cab-muted">{c.salesrender_id || '—'}</span>
+                      )}
                     </td>
                     <td>{c.unp || '—'}</td>
                     <td>{Number(c.balance).toFixed(2)}</td>
@@ -491,20 +534,26 @@ export default function AdminCompaniesPage() {
                       <span className="cab-chip">{statusLabel(c.status)}</span>
                     </td>
                     <td onClick={(e) => e.stopPropagation()}>
-                      <button
-                        type="button"
-                        title="Клиенту дополнительно списывается 1,50 BYN за каждый выкупленный заказ. Нажмите, чтобы включить или отключить."
-                        disabled={savingBuyout === c.id}
-                        onClick={() => toggleBuyout(c)}
-                        className={`cab-buyout-toggle${Number(c.buyout_enabled) === 1 ? ' is-on' : ''}`}
-                      >
-                        <span className="cab-buyout-toggle__dot" />
-                        {savingBuyout === c.id
-                          ? '…'
-                          : Number(c.buyout_enabled) === 1
-                            ? 'вкл'
-                            : 'выкл'}
-                      </button>
+                      {canEdit ? (
+                        <button
+                          type="button"
+                          title="Клиенту дополнительно списывается 1,50 BYN за каждый выкупленный заказ. Нажмите, чтобы включить или отключить."
+                          disabled={savingBuyout === c.id}
+                          onClick={() => toggleBuyout(c)}
+                          className={`cab-buyout-toggle${Number(c.buyout_enabled) === 1 ? ' is-on' : ''}`}
+                        >
+                          <span className="cab-buyout-toggle__dot" />
+                          {savingBuyout === c.id
+                            ? '…'
+                            : Number(c.buyout_enabled) === 1
+                              ? 'вкл'
+                              : 'выкл'}
+                        </button>
+                      ) : (
+                        <span className="cab-muted">
+                          {Number(c.buyout_enabled) === 1 ? 'вкл' : 'выкл'}
+                        </span>
+                      )}
                     </td>
                     <td>
                       {Number(c.has_own_tariffs) ? (
@@ -519,14 +568,18 @@ export default function AdminCompaniesPage() {
                       )}
                     </td>
                     <td onClick={(e) => e.stopPropagation()}>
-                      <button
-                        type="button"
-                        className="cab-btn ghost"
-                        style={{ minHeight: 32, padding: '0 12px', fontSize: '0.78rem' }}
-                        onClick={() => setEditingId(c.id)}
-                      >
-                        Изменить
-                      </button>
+                      {canEdit ? (
+                        <button
+                          type="button"
+                          className="cab-btn ghost"
+                          style={{ minHeight: 32, padding: '0 12px', fontSize: '0.78rem' }}
+                          onClick={() => setEditingId(c.id)}
+                        >
+                          Изменить
+                        </button>
+                      ) : (
+                        <span className="cab-muted">—</span>
+                      )}
                     </td>
                   </tr>
                 ))}
@@ -543,14 +596,17 @@ export default function AdminCompaniesPage() {
         </div>
       </div>
 
-      <EditCompanyModal
-        company={items.find((c) => c.id === editingId) || null}
-        onClose={() => setEditingId(null)}
-        onSaved={(updated) => {
-          if (!updated) return
-          setItems((prev) => prev.map((c) => (c.id === updated.id ? { ...c, ...updated } : c)))
-        }}
-      />
+      {canEdit ? (
+        <EditCompanyModal
+          company={items.find((c) => c.id === editingId) || null}
+          onClose={() => setEditingId(null)}
+          onSaved={(updated) => {
+            if (!updated) return
+            setItems((prev) => prev.map((c) => (c.id === updated.id ? { ...c, ...updated } : c)))
+          }}
+          onDeleted={(id) => setItems((prev) => prev.filter((c) => c.id !== id))}
+        />
+      ) : null}
     </>
   )
 }

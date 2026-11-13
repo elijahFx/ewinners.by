@@ -1,5 +1,6 @@
 import { query } from '../db.js';
 import { billingStartDate, billingStartDateLabel } from './billingCutoff.js';
+import { listBlockedCompanies, listProjectStates } from './financialState.js';
 
 /**
  * Сверка заказов SalesRender с нашими списаниями.
@@ -151,12 +152,72 @@ async function companyByProject(projectId) {
   return rows[0] || null;
 }
 
+async function loadPendingReport({ from, to = null }) {
+  const params = { from };
+  let where = `p.status = 'pending' AND p.created_at >= :from`;
+  if (to) {
+    where += ' AND p.created_at < DATE_ADD(:to, INTERVAL 1 DAY)';
+    params.to = to;
+  }
+  const rows = await query(
+    `SELECT p.*, c.name AS company_name
+       FROM salesrender_pending_charges p
+       JOIN companies c ON c.id = p.company_id
+      WHERE ${where}
+      ORDER BY p.created_at, p.id`,
+    params,
+  );
+  const items = rows.map((row) => ({
+    id: row.id,
+    orderId: row.order_id,
+    companyId: row.company_id,
+    companyName: row.company_name,
+    salesrenderProjectId: row.salesrender_project_id,
+    kind: row.kind,
+    amount: Number(row.amount),
+    reason: row.reason,
+    status: row.status,
+    createdAt: row.created_at,
+    attempts: Number(row.attempts || 0),
+    lastError: row.last_error,
+  }));
+  const byCompany = new Map();
+  for (const item of items) {
+    const key = item.companyId;
+    if (!byCompany.has(key)) {
+      byCompany.set(key, {
+        companyId: key,
+        companyName: item.companyName,
+        count: 0,
+        amount: 0,
+      });
+    }
+    const agg = byCompany.get(key);
+    agg.count += 1;
+    agg.amount += item.amount;
+  }
+  return {
+    items,
+    amount: Number(items.reduce((sum, item) => sum + item.amount, 0).toFixed(2)),
+    byCompany: [...byCompany.values()].sort((a, b) => b.amount - a.amount),
+    eventIds: new Set(items.map((item) => `sr-accepted-${item.orderId}`)),
+    baseOrderIds: new Set(
+      items.filter((item) => item.kind === 'accepted').map((item) => String(item.orderId)),
+    ),
+  };
+}
+
 /**
  * Сверяет заказы SalesRender со списаниями.
  * Возвращает отчёт: что не списано, кому и на какую сумму.
  */
 export async function buildReconciliationReport({ from, to = null }) {
   const orders = await fetchBillableOrders({ from, to });
+  const [pendingReport, blockedCompanies, blockedProjects] = await Promise.all([
+    loadPendingReport({ from, to }),
+    listBlockedCompanies(),
+    listProjectStates(),
+  ]);
   if (!orders.length) {
     return {
       from,
@@ -167,6 +228,11 @@ export async function buildReconciliationReport({ from, to = null }) {
       missing: [],
       missingAmount: 0,
       byCompany: [],
+      pending: pendingReport.items,
+      pendingAmount: pendingReport.amount,
+      pendingByCompany: pendingReport.byCompany,
+      blockedCompanies,
+      blockedProjects,
     };
   }
 
@@ -181,7 +247,9 @@ export async function buildReconciliationReport({ from, to = null }) {
     rows.forEach((r) => chargedIds.add(String(r.crm_event_id).replace('sr-accepted-', '')));
   }
 
-  const missingRaw = orders.filter((o) => !chargedIds.has(String(o.id)));
+  const missingRaw = orders.filter(
+    (o) => !chargedIds.has(String(o.id)) && !pendingReport.baseOrderIds.has(String(o.id)),
+  );
   const missing = [];
   const byCompany = new Map();
   let missingAmount = 0;
@@ -212,11 +280,16 @@ export async function buildReconciliationReport({ from, to = null }) {
     to,
     billingStartDate: billingStartDateLabel(),
     ordersChecked: orders.length,
-    charged: orders.length - missing.length,
+    charged: orders.filter((o) => chargedIds.has(String(o.id))).length,
     missing,
     missingAmount: Number(missingAmount.toFixed(2)),
     unmappedProjects: [...new Set(missing.filter((m) => !m.companyId).map((m) => m.projectId))],
     byCompany: [...byCompany.values()].sort((a, b) => b.amount - a.amount),
+    pending: pendingReport.items,
+    pendingAmount: pendingReport.amount,
+    pendingByCompany: pendingReport.byCompany,
+    blockedCompanies,
+    blockedProjects,
   };
 }
 
@@ -245,10 +318,17 @@ async function replayOrder(order, status) {
     body: JSON.stringify(payload),
   });
   const out = await res.json().catch(() => ({}));
-  if (out.error) return { ok: false, error: out.error, amount: 0 };
-  const amount = (out.charges || []).reduce((s, c) => s + Number(c.amount || 0), 0);
-  const duplicate = !!(out.duplicate || (out.charges || []).some((c) => c.duplicate));
-  return { ok: true, duplicate, amount };
+  if (out.error) return { ok: false, error: out.error, amount: 0, queued: false };
+  const charges = out.charges || [];
+  const amount = charges
+    .filter((c) => !c.queued && !c.skipped)
+    .reduce((s, c) => s + Number(c.amount || 0), 0);
+  const pendingAmount = charges
+    .filter((c) => c.queued)
+    .reduce((s, c) => s + Number(c.amount || 0), 0);
+  const duplicate = !!(out.duplicate || charges.some((c) => c.duplicate));
+  const queued = !!out.queued || charges.some((c) => c.queued);
+  return { ok: true, duplicate, queued, amount, pendingAmount };
 }
 
 /**
@@ -274,17 +354,20 @@ export async function recoverMissingOrders({ from, to = null, orderIds = null })
       results.push({ id: item.id, ok: false, error: base.error, amount: 0 });
       continue;
     }
-    let amount = base.duplicate ? 0 : base.amount;
+    let amount = base.duplicate || base.queued ? 0 : base.amount;
+    let queued = base.queued;
     if (item.addon > 0) {
       const add = await replayOrder(order, { id: 5, name: 'Вручено' });
-      if (add.ok && !add.duplicate) amount += add.amount;
+      if (add.ok && !add.duplicate && !add.queued) amount += add.amount;
+      if (add.queued) queued = true;
     }
     total += amount;
-    results.push({ id: item.id, ok: true, duplicate: base.duplicate, amount });
+    results.push({ id: item.id, ok: true, duplicate: base.duplicate, queued, amount });
   }
 
   return {
-    restored: results.filter((r) => r.ok && !r.duplicate).length,
+    restored: results.filter((r) => r.ok && !r.duplicate && !r.queued).length,
+    queued: results.filter((r) => r.queued).length,
     skipped: results.filter((r) => r.duplicate).length,
     failed: results.filter((r) => !r.ok).length,
     amount: Number(total.toFixed(2)),

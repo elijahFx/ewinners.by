@@ -87,11 +87,35 @@ export default function CabinetLayout() {
     if (routeDirection) applyDirection(routeDirection)
   }, [routeDirection, applyDirection])
 
+  // HR-сотрудник работает только в своём направлении.
+  const effectiveDirection = isHr ? 'hr' : direction
+
+  useEffect(() => {
+    if (!isHr) return
+    const path = location.pathname.replace(/\/+$/, '') || '/'
+    const allowed = path === '/cabinet/admin/direction/hr'
+    if (!allowed) navigate('/cabinet/admin/direction/hr', { replace: true })
+  }, [isHr, location.pathname, navigate])
+
   function pickDirection(code) {
     applyDirection(code)
-    // Смена направления на рабочем месте сразу открывает его страницу:
-    // иначе заголовок, счёт и обороты остались бы от прежнего направления.
-    if (isHr || location.pathname.startsWith('/cabinet/admin/direction')) {
+    if (isHr) {
+      navigate('/cabinet/admin/direction/hr')
+      return
+    }
+    const path = location.pathname.replace(/\/+$/, '') || '/'
+    const onWorkspace = path.startsWith('/cabinet/admin/direction/')
+    // В HR/Digital остаются только обзор, рабочее место, банкинг и клиенты.
+    // Если открыта «глобальная» страница (почта, пользователи, счета…),
+    // переключаем на рабочее место, чтобы не остаться на скрытом разделе.
+    const scopedPage = [
+      '/cabinet/admin',
+      '/cabinet/admin/banking',
+      '/cabinet/admin/companies',
+    ].includes(path)
+    if (onWorkspace) {
+      navigate(`/cabinet/admin/direction/${code}`)
+    } else if (code !== 'kc' && !scopedPage) {
       navigate(`/cabinet/admin/direction/${code}`)
     }
   }
@@ -179,6 +203,21 @@ export default function CabinetLayout() {
       : []),
   ]
 
+  // В HR/Digital не показываем глобальные разделы КЦ: остаются только
+  // обзор, рабочее место, банкинг и клиенты этого направления.
+  const directionScopedLinks = [
+    { to: '/cabinet/admin', end: true, label: 'Админ-обзор', icon: Shield },
+    { to: `/cabinet/admin/direction/${direction}`, label: 'Рабочее место', icon: Building2 },
+    { to: '/cabinet/admin/banking', label: 'Банкинг', icon: Landmark },
+    { to: '/cabinet/admin/companies', label: 'Клиенты', icon: Building2 },
+  ]
+
+  // HR-сотруднику нужен только его рабочий стол: ни клиентов, ни других
+  // направлений, чтобы не путаться с КЦ.
+  const hrLinks = [
+    { to: '/cabinet/admin/direction/hr', label: 'Рабочее место', icon: Building2 },
+  ]
+
   // Сотрудник направления видит только своё рабочее место
   // Счётчик непрочитанных писем для бейджа в меню
   useEffect(() => {
@@ -200,15 +239,11 @@ export default function CabinetLayout() {
   }, [user])
 
   const links = isHr
-    ? [
-        {
-          to: `/cabinet/admin/direction/${direction}`,
-          label: 'Рабочее место',
-          icon: Building2,
-        },
-      ]
+    ? hrLinks
     : isStaff
-      ? adminLinks
+      ? effectiveDirection === 'kc'
+        ? adminLinks
+        : directionScopedLinks
       : clientLinks
 
   function doLogout() {
@@ -250,8 +285,8 @@ export default function CabinetLayout() {
   }
 
   const directionContextValue = useMemo(
-    () => ({ direction, setDirection: applyDirection }),
-    [direction, applyDirection],
+    () => ({ direction: effectiveDirection, setDirection: applyDirection }),
+    [effectiveDirection, applyDirection],
   )
 
   return (
@@ -333,7 +368,7 @@ export default function CabinetLayout() {
           </div>
         ) : null}
 
-        {isStaff ? (
+        {isStaff && !isHr ? (
           <div className="cab-direction-picker">
             <span className="cab-direction-picker__label">Направление</span>
             <div className="cab-direction-picker__options">

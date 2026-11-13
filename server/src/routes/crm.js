@@ -13,6 +13,8 @@ import {
   SR_STATUS_ACCEPTED_ID,
   SR_STATUS_DELIVERED_ID,
 } from '../services/salesrender.js';
+import { isCompanyBlocked } from '../services/financialState.js';
+import { salesrenderControlConfig } from '../services/salesrenderControl.js';
 
 const router = Router();
 
@@ -72,10 +74,16 @@ router.post('/salesrender/delivered', salesrenderWebhookAuth, async (req, res) =
       if (own.length === 1) projectId = own[0].id;
     }
 
+    const salesrenderProjectId =
+      rawProjectId != null && String(rawProjectId).trim() !== ''
+        ? String(rawProjectId)
+        : matchedSalesRenderId || null;
+
     const result = await processSalesRenderDelivered({
       companyId,
       payload,
       projectId,
+      salesrenderProjectId,
       employeeName: payload.employeeName || payload.operator || null,
       acceptedStatusId: Number(payload.acceptedStatusId || SR_STATUS_ACCEPTED_ID),
       deliveredStatusId: Number(payload.deliveredStatusId || SR_STATUS_DELIVERED_ID),
@@ -92,8 +100,14 @@ router.post('/salesrender/delivered', salesrenderWebhookAuth, async (req, res) =
           ...payload,
           companyId,
         }),
-        status: result.duplicate ? 'duplicate' : result.skipped ? 'skipped' : 'processed',
-        error_message: result.reason || null,
+        status: result.queued
+          ? 'queued'
+          : result.duplicate
+            ? 'duplicate'
+            : result.skipped
+              ? 'skipped'
+              : 'processed',
+        error_message: result.reason || (result.queued ? 'queued_for_topup' : null),
       },
     );
 
@@ -370,6 +384,25 @@ router.post('/events', async (req, res) => {
       throw new Error('serviceCode и quantity обязательны');
     }
 
+    // В боевом режиме проверяем единое финансовое состояние, а не только
+    // hard_stop: исчерпанный кредитный лимит тоже должен останавливать действия.
+    // В dry-run поведение не меняем — только собираем состояние.
+    const controlCfg = salesrenderControlConfig();
+    if (!controlCfg.dryRun) {
+      const financial = await isCompanyBlocked(companyId);
+      if (financial.blocked) {
+        const err = new Error(
+          financial.pending.count > 0
+            ? 'Есть неоплаченные заказы в пограничной зоне — действия приостановлены'
+            : 'Баланс или кредитный лимит исчерпан — действия приостановлены',
+        );
+        err.status = 409;
+        err.code =
+          financial.reason === 'overdraft' ? 'ERR_CREDIT_LIMIT' : 'ERR_INSUFFICIENT_FUNDS';
+        throw err;
+      }
+    }
+
     if (projectId) {
       const projects = await query(
         `SELECT * FROM projects WHERE id = :id AND company_id = :company_id`,
@@ -377,7 +410,7 @@ router.post('/events', async (req, res) => {
       );
       const project = projects[0];
       if (!project) throw new Error('Проект не найден');
-      if (project.status === 'paused' && req.crmCompany.low_balance_action === 'hard_stop') {
+      if (project.status === 'paused') {
         throw new Error('Проект приостановлен из-за баланса');
       }
     }

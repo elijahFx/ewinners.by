@@ -22,7 +22,8 @@ import CompanyPage from './cabinet/pages/CompanyPage'
 import NotificationsPage from './cabinet/pages/NotificationsPage'
 import CrmIntegrationPage from './cabinet/pages/CrmIntegrationPage'
 import AdminOverviewPage from './cabinet/pages/admin/AdminOverviewPage'
-import AdminCompaniesPage from './cabinet/pages/admin/AdminCompaniesPage'
+import CompaniesPage from './cabinet/pages/admin/CompaniesPage'
+import DirectionGuard from './cabinet/DirectionGuard'
 import AdminDirectionPage from './cabinet/pages/admin/AdminDirectionPage'
 import AdminMailPage from './cabinet/pages/admin/AdminMailPage'
 import AdminUsersPage from './cabinet/pages/admin/AdminUsersPage'
@@ -153,7 +154,9 @@ export default function App() {
             path="admin/mail"
             element={
               <ProtectedRoute roles={['admin', 'accountant']}>
-                <AdminMailPage />
+                <DirectionGuard>
+                  <AdminMailPage />
+                </DirectionGuard>
               </ProtectedRoute>
             }
           />
@@ -169,7 +172,7 @@ export default function App() {
             path="admin/companies"
             element={
               <ProtectedRoute roles={['admin', 'accountant']}>
-                <AdminCompaniesPage />
+                <CompaniesPage />
               </ProtectedRoute>
             }
           />
@@ -177,7 +180,9 @@ export default function App() {
             path="admin/users"
             element={
               <ProtectedRoute roles={['admin']}>
-                <AdminUsersPage />
+                <DirectionGuard>
+                  <AdminUsersPage />
+                </DirectionGuard>
               </ProtectedRoute>
             }
           />
@@ -185,7 +190,9 @@ export default function App() {
             path="admin/projects"
             element={
               <ProtectedRoute roles={['admin']}>
-                <AdminProjectsPage />
+                <DirectionGuard>
+                  <AdminProjectsPage />
+                </DirectionGuard>
               </ProtectedRoute>
             }
           />
@@ -201,7 +208,9 @@ export default function App() {
             path="admin/invoices"
             element={
               <ProtectedRoute roles={['admin', 'accountant']}>
-                <AdminInvoicesPage />
+                <DirectionGuard>
+                  <AdminInvoicesPage />
+                </DirectionGuard>
               </ProtectedRoute>
             }
           />
@@ -209,7 +218,9 @@ export default function App() {
             path="admin/documents"
             element={
               <ProtectedRoute roles={['admin', 'accountant']}>
-                <AdminDocumentsPage />
+                <DirectionGuard>
+                  <AdminDocumentsPage />
+                </DirectionGuard>
               </ProtectedRoute>
             }
           />
@@ -218,7 +229,9 @@ export default function App() {
             path="admin/balance"
             element={
               <ProtectedRoute roles={['admin', 'accountant']}>
-                <AdminBalancePage />
+                <DirectionGuard>
+                  <AdminBalancePage />
+                </DirectionGuard>
               </ProtectedRoute>
             }
           />
@@ -226,7 +239,9 @@ export default function App() {
             path="admin/api-keys"
             element={
               <ProtectedRoute roles={['admin', 'accountant']}>
-                <AdminApiKeysPage />
+                <DirectionGuard>
+                  <AdminApiKeysPage />
+                </DirectionGuard>
               </ProtectedRoute>
             }
           />
@@ -234,7 +249,9 @@ export default function App() {
             path="admin/write-offs"
             element={
               <ProtectedRoute roles={['admin', 'accountant']}>
-                <AdminWriteOffsPage />
+                <DirectionGuard>
+                  <AdminWriteOffsPage />
+                </DirectionGuard>
               </ProtectedRoute>
             }
           />
@@ -242,7 +259,9 @@ export default function App() {
             path="admin/reconciliation"
             element={
               <ProtectedRoute roles={['admin', 'accountant']}>
-                <AdminReconciliationPage />
+                <DirectionGuard>
+                  <AdminReconciliationPage />
+                </DirectionGuard>
               </ProtectedRoute>
             }
           />
@@ -250,7 +269,9 @@ export default function App() {
             path="admin/tariffs"
             element={
               <ProtectedRoute roles={['admin']}>
-                <AdminTariffsPage />
+                <DirectionGuard>
+                  <AdminTariffsPage />
+                </DirectionGuard>
               </ProtectedRoute>
             }
           />

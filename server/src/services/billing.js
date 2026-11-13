@@ -156,10 +156,14 @@ export async function applyBalanceChange({
   if (type === 'debit') {
     const floor = -Number(company.credit_limit || 0);
     if (company.low_balance_action === 'hard_stop' && balanceAfter < 0) {
-      throw new Error('Недостаточно средств на балансе');
+      const err = new Error('Недостаточно средств на балансе');
+      err.code = 'ERR_INSUFFICIENT_FUNDS';
+      throw err;
     }
     if (company.low_balance_action === 'allow_credit' && balanceAfter < floor) {
-      throw new Error('Превышен кредитный лимит');
+      const err = new Error('Превышен кредитный лимит');
+      err.code = 'ERR_CREDIT_LIMIT';
+      throw err;
     }
   }
 
@@ -197,12 +201,8 @@ export async function applyBalanceChange({
     ],
   );
 
-  if (balanceAfter <= 0 && company.low_balance_action === 'hard_stop') {
-    await exec(`UPDATE projects SET status = 'paused' WHERE company_id = ? AND status = 'active'`, [
-      companyId,
-    ]);
-    await exec(`UPDATE companies SET status = 'suspended' WHERE id = ?`, [companyId]);
-  }
+  // Остановка проектов и SalesRender вынесена в financialState.js: это внешние
+  // вызовы, их нельзя делать внутри транзакции с FOR UPDATE.
 
   // Сигнал фронту: баланс изменился. Событие уходит всем, кто видит этого
   // клиента (он сам и сотрудники), и просто просит перечитать данные.
@@ -236,11 +236,30 @@ async function checkLowBalanceCrossing(companyId, applied) {
   }
 }
 
+export function isInsufficientFundsError(err) {
+  return err?.code === 'ERR_INSUFFICIENT_FUNDS' || err?.code === 'ERR_CREDIT_LIMIT';
+}
+
+/**
+ * Пост-коммит хук: после изменения баланса обновляет финансовое состояние
+ * клиента и пограничную зону. Динамический импорт разрывает цикл
+ * billing ↔ financialState (financialState сам использует applyBalanceChange).
+ */
+async function runFinancialHook(companyId, { credit = false } = {}) {
+  try {
+    const { afterBalanceChange } = await import('./financialState.js');
+    await afterBalanceChange(companyId, { credit });
+  } catch (err) {
+    console.warn('[financial-state] не удалось обновить состояние:', err.message);
+  }
+}
+
 export async function creditBalance(params) {
   const applied = await withTransaction((conn) =>
     applyBalanceChange({ ...params, conn, type: 'credit' }),
   );
   await checkLowBalanceCrossing(params.companyId, applied);
+  await runFinancialHook(params.companyId, { credit: true });
   return applied;
 }
 
@@ -249,6 +268,7 @@ export async function debitBalance(params) {
     applyBalanceChange({ ...params, conn, type: 'debit' }),
   );
   await checkLowBalanceCrossing(params.companyId, applied);
+  await runFinancialHook(params.companyId, { credit: false });
   return applied;
 }
 

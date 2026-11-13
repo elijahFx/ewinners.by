@@ -2,7 +2,8 @@ import { Router } from 'express';
 import { generateInvoicePdf } from '../services/invoicePdf.js';
 import { buildXlsx } from '../services/xlsx.js';
 import { audit } from '../services/billing.js';
-import { ensureActForInvoice, ensureDetailDocument } from '../services/documents.js';
+import { ensureDetailDocument } from '../services/documents.js';
+import { ensureMonthlyAct, resolveActPeriod } from '../services/monthlyActs.js';
 import { notifyChannelsStatus, sendDocumentByEmail } from '../services/notify.js';
 import dayjs from 'dayjs';
 import fs from 'fs';
@@ -427,6 +428,70 @@ router.post('/documents/detail/generate', async (req, res) => {
   }
 });
 
+router.post('/acts/request', async (req, res) => {
+  try {
+    const companyId = await resolveClientCompanyId(req, req.body?.companyId);
+    if (!companyId) return res.status(400).json({ error: 'Компания не назначена' });
+
+    const month = String(req.body?.month || '').trim();
+    if (!/^\d{4}-\d{2}$/.test(month)) {
+      return res.status(400).json({ error: 'Укажите месяц в формате ГГГГ-ММ' });
+    }
+
+    const period = resolveActPeriod(month);
+    const currentPeriod = resolveActPeriod();
+    if (period.key >= currentPeriod.key) {
+      return res.status(400).json({
+        error:
+          'Акт можно запросить только за прошедший месяц. ' +
+          'За текущий месяц акт сформируется автоматически после его окончания.',
+      });
+    }
+
+    const companies = await query('SELECT * FROM companies WHERE id = :id LIMIT 1', {
+      id: companyId,
+    });
+    if (!companies[0]) return res.status(404).json({ error: 'Компания не найдена' });
+
+    // Клиент не задаёт сумму и услуги: акт собирается только из фактических
+    // списаний с баланса за выбранный месяц. Повторный запрос открывает уже
+    // сформированный документ, а не создаёт дубль.
+    const result = await ensureMonthlyAct({
+      company: companies[0],
+      period: period.key,
+      force: false,
+      notify: false,
+      skipIfEmpty: true,
+    });
+
+    if (result.skipped) {
+      return res.status(400).json({
+        error: `За период ${period.label} списаний с баланса не было — акт не формируется.`,
+      });
+    }
+
+    await audit(req.user.id, 'request_monthly_act', 'document', result.document.id, {
+      companyId,
+      period: period.key,
+      number: result.number,
+      total: result.total,
+    });
+
+    res.json({
+      document: result.document,
+      number: result.number,
+      period: period.key,
+      periodLabel: period.label,
+      total: result.total,
+      created: Boolean(result.created),
+      updated: Boolean(result.updated),
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(err.status || 500).json({ error: err.message || 'Не удалось запросить акт' });
+  }
+});
+
 router.get('/documents/:id/download', async (req, res) => {
   try {
     const companyId = companyScope(req);
@@ -503,35 +568,15 @@ router.post('/documents/:id/email', async (req, res) => {
   }
 });
 
-router.get('/invoices/:id/act', async (req, res) => {
-  try {
-    const companyId = companyScope(req);
-    const rows = await query('SELECT * FROM invoices WHERE id = :id LIMIT 1', {
-      id: Number(req.params.id),
-    });
-    const invoice = rows[0];
-    if (!invoice) return res.status(404).json({ error: 'Счёт не найден' });
-    if (req.user.role === 'client' && invoice.company_id !== companyId) {
-      return res.status(403).json({ error: 'Нет доступа' });
-    }
-    if (invoice.status !== 'paid') {
-      return res.status(400).json({ error: 'Акт доступен после оплаты счёта' });
-    }
-    const companies = await query('SELECT * FROM companies WHERE id = :id LIMIT 1', {
-      id: invoice.company_id,
-    });
-    const doc = await ensureActForInvoice(invoice, companies[0]);
-    const mode = req.query.mode === 'view' ? 'view' : 'download';
-    if (mode === 'view') {
-      res.setHeader('Content-Type', 'application/pdf');
-      res.setHeader('Content-Disposition', `inline; filename="${path.basename(doc.file_path)}"`);
-      return fs.createReadStream(doc.file_path).pipe(res);
-    }
-    return res.download(doc.file_path, path.basename(doc.file_path));
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: err.message || 'Ошибка акта' });
-  }
+// Акт нельзя сформировать по кнопке: он создаётся автоматически за месяц
+// и отражает только списания с баланса. Оставляем понятный ответ для старых
+// ссылок и закладок.
+router.get('/invoices/:id/act', (_req, res) => {
+  res.status(403).json({
+    error:
+      'Акт по счёту больше не формируется. Акт оказанных услуг собирается за прошедший месяц ' +
+      'кнопкой «Запросить акт за месяц» и отражает только списания с баланса.',
+  });
 });
 
 router.get('/invoices/:id/view', async (req, res) => {

@@ -9,11 +9,11 @@ import {
 import { markInvoicePaid } from './invoicePayment.js';
 import { audit, notifyCompanyUsers } from './billing.js';
 
-async function findOpenInvoiceByNumber(number) {
+async function findInvoiceByNumber(number) {
   const rows = await query(
     `SELECT * FROM invoices
      WHERE UPPER(number) = :number
-       AND status IN ('awaiting_payment', 'partially_paid', 'created', 'overdue', 'needs_review')
+       AND status IN ('awaiting_payment', 'partially_paid', 'created', 'overdue', 'needs_review', 'paid')
      ORDER BY id DESC
      LIMIT 1`,
     { number: String(number).toUpperCase() },
@@ -21,13 +21,55 @@ async function findOpenInvoiceByNumber(number) {
   return rows[0] || null;
 }
 
-async function paymentAlreadyImported(externalId) {
-  if (!externalId) return false;
+async function findCreditedPaymentForInvoice(invoiceId, amount) {
+  const rows = await query(
+    `SELECT id FROM bank_payments
+      WHERE invoice_id = :invoice_id AND status = 'credited' AND amount = :amount
+      ORDER BY id ASC
+      LIMIT 1`,
+    { invoice_id: Number(invoiceId), amount: Number(amount) },
+  );
+  return rows[0] || null;
+}
+
+/**
+ * Ищем уже импортированный платёж.
+ *
+ * MTBank в разных выписках может вернуть один и тот же платёж с разным
+ * reference/transactionId (в нём меняется дата выписки). Поэтому кроме
+ * внешнего id сверяем устойчивый отпечаток: сумма, дата операции, плательщик
+ * и назначение платежа. Иначе один платёж за 7 дней превращается в 8 копий.
+ */
+async function paymentAlreadyImported(externalId, movement = null) {
+  if (externalId) {
+    const rows = await query(
+      `SELECT id, status, invoice_id FROM bank_payments
+       WHERE external_id = :external_id
+       LIMIT 1`,
+      { external_id: String(externalId) },
+    );
+    if (rows[0]) return rows[0];
+  }
+
+  if (!movement) return null;
+
   const rows = await query(
     `SELECT id, status, invoice_id FROM bank_payments
-     WHERE external_id = :external_id
-     LIMIT 1`,
-    { external_id: String(externalId) },
+      WHERE provider = 'mtbank'
+        AND direction = :direction
+        AND amount = :amount
+        AND operation_date = :operation_date
+        AND COALESCE(payer_unp, '') = COALESCE(:payer_unp, '')
+        AND COALESCE(purpose, '') = COALESCE(:purpose, '')
+      ORDER BY (status = 'credited') DESC, id ASC
+      LIMIT 1`,
+    {
+      direction: movement.direction === 'expense' ? 'expense' : 'income',
+      amount: Number(movement.amount),
+      operation_date: movement.date || null,
+      payer_unp: movement.unp || '',
+      purpose: movement.purpose || '',
+    },
   );
   return rows[0] || null;
 }
@@ -94,10 +136,14 @@ export async function syncMtbankPayments({ from, to, lookbackDays = 7 } = {}) {
   let matched = 0;
 
   for (const movement of incomes) {
-    const existing = await paymentAlreadyImported(movement.id);
+    const existing = await paymentAlreadyImported(movement.id, movement);
     if (existing) {
       if (existing.status === 'credited') {
         skipped.push({ id: movement.id, reason: 'already_credited' });
+        continue;
+      }
+      if (existing.status === 'rejected') {
+        skipped.push({ id: movement.id, reason: 'previously_rejected' });
         continue;
       }
     }
@@ -119,7 +165,7 @@ export async function syncMtbankPayments({ from, to, lookbackDays = 7 } = {}) {
 
     let invoice = null;
     for (const num of numbers) {
-      const candidate = await findOpenInvoiceByNumber(num);
+      const candidate = await findInvoiceByNumber(num);
       if (candidate && amountsMatch(candidate.amount, movement.amount)) {
         invoice = candidate;
         break;
@@ -141,6 +187,36 @@ export async function syncMtbankPayments({ from, to, lookbackDays = 7 } = {}) {
         amount: movement.amount,
       });
       continue;
+    }
+
+    // Счёт уже оплачен (например, вручную до прихода выписки). Первый
+    // банковский платёж привязываем к счёту и помечаем зачисленным без
+    // повторного изменения баланса. Дальнейшие копии — дубли, не плодим их.
+    if (invoice.status === 'paid' || invoice.paid_at) {
+      const creditedPayment = await findCreditedPaymentForInvoice(
+        invoice.id,
+        movement.amount,
+      );
+      if (creditedPayment && creditedPayment.id !== existing?.id) {
+        if (existing) {
+          await query(
+            `UPDATE bank_payments
+                SET invoice_id = :invoice_id, company_id = :company_id, status = 'rejected'
+              WHERE id = :id AND status <> 'credited'`,
+            {
+              id: existing.id,
+              invoice_id: invoice.id,
+              company_id: invoice.company_id,
+            },
+          );
+        }
+        skipped.push({
+          id: movement.id,
+          reason: 'duplicate_payment_for_paid_invoice',
+          number: invoice.number,
+        });
+        continue;
+      }
     }
 
     matched += 1;
@@ -166,7 +242,7 @@ export async function syncMtbankPayments({ from, to, lookbackDays = 7 } = {}) {
           status: 'matched',
         });
       } catch (err) {
-        const again = await paymentAlreadyImported(movement.id);
+        const again = await paymentAlreadyImported(movement.id, movement);
         paymentId = again?.id || null;
         if (!paymentId) {
           skipped.push({ id: movement.id, reason: err.message });

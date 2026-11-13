@@ -29,3 +29,6 @@ server.zip
 
 # Deployment helpers (local only)
 .deploy/
+
+# Финансовые бэкапы и выгрузки (персональные данные)
+artifacts/bank-payments-backup-*.json

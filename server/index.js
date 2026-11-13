@@ -24,6 +24,8 @@ import { bootstrapYandexDisk, scheduleYandexBackup, syncAllToYandexDisk } from '
 import { ensureSalesRenderServices } from './src/services/salesrender.js';
 import { scheduleBalanceDigest } from './src/services/balanceDigest.js';
 import { scheduleReconciliation } from './src/services/reconciliationScheduler.js';
+import { scheduleFinancialStateSync } from './src/services/financialState.js';
+import { scheduleMonthlyActs } from './src/services/actScheduler.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -89,6 +91,13 @@ async function start() {
 
   // Раз в день — сверка заказов SalesRender со списаниями: ловит потерянные вебхуки.
   scheduleReconciliation();
+
+  // Финансовое состояние клиентов и остановка проектов SalesRender.
+  // По умолчанию dry-run: только пишет, кого остановили бы, без мутаций.
+  scheduleFinancialStateSync();
+
+  // Акты оказанных услуг: в последний день месяца и добор на следующий день.
+  scheduleMonthlyActs();
 
   // Passenger (Plesk) manages the port itself
   if (typeof PhusionPassenger !== 'undefined') {

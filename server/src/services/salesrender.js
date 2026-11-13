@@ -12,9 +12,12 @@ import { query } from '../db.js';
 import { isOrderTooOld } from './billingCutoff.js';
 import {
   debitBalance,
+  isInsufficientFundsError,
   resolveTariffAndProject,
   tariffMissingReason,
 } from './billing.js';
+import { pendingByEvent, queuePendingCharge } from './salesrenderPending.js';
+import { scheduleCompanyReconcile } from './financialState.js';
 
 // Статусы SalesRender, по которым списываем.
 // «Принят» — базовый тариф за обзвон, «Вручено» — доплата за выкуп.
@@ -422,6 +425,7 @@ export async function processSalesRenderDelivered({
   companyId,
   payload,
   projectId = null,
+  salesrenderProjectId = null,
   employeeName = null,
   acceptedStatusId = SR_STATUS_ACCEPTED_ID,
   deliveredStatusId = SR_STATUS_DELIVERED_ID,
@@ -500,21 +504,73 @@ export async function processSalesRenderDelivered({
       const crossLabel = [flags.cross ? 'кроссейл' : null, flags.upsell ? 'апсейл' : null]
         .filter(Boolean)
         .join('+');
+      const commentText =
+        `SalesRender заказ #${orderId}: обзвон` +
+        (crossLabel ? ` (${crossLabel})` : ' (без апс/кросс)');
 
-      const base = await debitOnceOrDuplicate({
-        companyId,
-        projectId: resolved.projectId,
-        service: baseService,
-        tariff: resolved.tariff,
-        eventId: baseEventId,
-        employeeName,
-        comment:
-          `SalesRender заказ #${orderId}: обзвон` +
-          (crossLabel ? ` (${crossLabel})` : ' (без апс/кросс)'),
-        orderId: String(orderId),
-        details,
-      });
-      charges.push(base.duplicate ? { skipped: true, duplicate: true, eventId: baseEventId } : base.charge);
+      // Если заказ уже в пограничной зоне — не списываем повторно: очередь
+      // разберётся после пополнения. Отменённый вручную заказ не воскрешаем.
+      const pending = await pendingByEvent(baseEventId);
+      if (pending) {
+        charges.push({
+          queued: pending.status === 'pending',
+          skipped: pending.status === 'canceled',
+          duplicate: pending.status === 'charged' || Boolean(pending.transaction_id),
+          canceled: pending.status === 'canceled',
+          eventId: baseEventId,
+          pendingId: pending.id,
+          amount: Number(pending.amount),
+          reason: 'already_in_pending',
+        });
+      } else {
+        try {
+          const base = await debitOnceOrDuplicate({
+            companyId,
+            projectId: resolved.projectId,
+            service: baseService,
+            tariff: resolved.tariff,
+            eventId: baseEventId,
+            employeeName,
+            comment: commentText,
+            orderId: String(orderId),
+            details,
+          });
+          charges.push(
+            base.duplicate ? { skipped: true, duplicate: true, eventId: baseEventId } : base.charge,
+          );
+        } catch (err) {
+          if (!isInsufficientFundsError(err)) throw err;
+          const queued = await queuePendingCharge({
+            companyId,
+            projectId: resolved.projectId,
+            salesrenderProjectId,
+            orderId: String(orderId),
+            eventId: baseEventId,
+            kind: 'accepted',
+            serviceId: baseService.id,
+            tariffId: resolved.tariff.id,
+            amount: Number(resolved.tariff.price),
+            reason: err.code === 'ERR_CREDIT_LIMIT' ? 'overdraft_limit' : 'insufficient_funds',
+            employeeName,
+            comment: commentText,
+            payload: {
+              orderId: String(orderId),
+              statusId,
+              statusName,
+              projectId: salesrenderProjectId,
+              flags,
+            },
+            details,
+          });
+          charges.push({
+            queued: true,
+            eventId: baseEventId,
+            pendingId: queued.id,
+            amount: Number(resolved.tariff.price),
+            reason: err.code,
+          });
+        }
+      }
     }
   }
 
@@ -547,18 +603,70 @@ export async function processSalesRenderDelivered({
           ).tariff;
 
           if (addOn) {
-            const add = await debitOnceOrDuplicate({
-              companyId,
-              projectId: usedProjectId,
-              service: deliveredService,
-              tariff: addOn,
-              eventId: addEventId,
-              employeeName,
-              comment: `SalesRender заказ #${orderId}: выкуп (вручено)`,
-              orderId: String(orderId),
-              details,
-            });
-            charges.push(add.duplicate ? { skipped: true, duplicate: true, eventId: addEventId } : add.charge);
+            const addComment = `SalesRender заказ #${orderId}: выкуп (вручено)`;
+            const pending = await pendingByEvent(addEventId);
+            if (pending) {
+              charges.push({
+                queued: pending.status === 'pending',
+                skipped: pending.status === 'canceled',
+                duplicate: pending.status === 'charged' || Boolean(pending.transaction_id),
+                canceled: pending.status === 'canceled',
+                eventId: addEventId,
+                pendingId: pending.id,
+                amount: Number(pending.amount),
+                reason: 'already_in_pending',
+              });
+            } else {
+              try {
+                const add = await debitOnceOrDuplicate({
+                  companyId,
+                  projectId: usedProjectId,
+                  service: deliveredService,
+                  tariff: addOn,
+                  eventId: addEventId,
+                  employeeName,
+                  comment: addComment,
+                  orderId: String(orderId),
+                  details,
+                });
+                charges.push(
+                  add.duplicate
+                    ? { skipped: true, duplicate: true, eventId: addEventId }
+                    : add.charge,
+                );
+              } catch (err) {
+                if (!isInsufficientFundsError(err)) throw err;
+                const queued = await queuePendingCharge({
+                  companyId,
+                  projectId: usedProjectId,
+                  salesrenderProjectId,
+                  orderId: String(orderId),
+                  eventId: addEventId,
+                  kind: 'delivered',
+                  serviceId: deliveredService.id,
+                  tariffId: addOn.id,
+                  amount: Number(addOn.price),
+                  reason: err.code === 'ERR_CREDIT_LIMIT' ? 'overdraft_limit' : 'insufficient_funds',
+                  employeeName,
+                  comment: addComment,
+                  payload: {
+                    orderId: String(orderId),
+                    statusId,
+                    statusName,
+                    projectId: salesrenderProjectId,
+                    flags,
+                  },
+                  details,
+                });
+                charges.push({
+                  queued: true,
+                  eventId: addEventId,
+                  pendingId: queued.id,
+                  amount: Number(addOn.price),
+                  reason: err.code,
+                });
+              }
+            }
           } else {
             console.warn(
               `[salesrender] у компании ${companyId} включён отдел выкупа, но тариф ${SR_SERVICE_DELIVERED} не задан — доплата не списана`,
@@ -574,7 +682,16 @@ export async function processSalesRenderDelivered({
   // списание уходило отдельное письмо. Порог отслеживает debitBalance,
   // а раз в день приходит одна сводка (sendDailyBalanceDigests).
 
-  const total = charges.reduce((s, c) => s + Number(c.amount || 0), 0);
+  const queued = charges.some((c) => c.queued);
+  const duplicate = charges.some((c) => c.duplicate);
+  const skipped = charges.some((c) => c.skipped);
+  const total = charges
+    .filter((c) => !c.queued && !c.skipped)
+    .reduce((s, c) => s + Number(c.amount || 0), 0);
+  const pendingTotal = charges
+    .filter((c) => c.queued)
+    .reduce((s, c) => s + Number(c.amount || 0), 0);
+  if (queued) scheduleCompanyReconcile(companyId);
   return {
     ok: true,
     orderId: String(orderId),
@@ -582,7 +699,11 @@ export async function processSalesRenderDelivered({
     statusName,
     flags,
     charges,
+    queued,
+    duplicate,
+    skipped,
     total,
+    pendingTotal,
     balanceAfter: updated[0] ? Number(updated[0].balance) : null,
   };
 }

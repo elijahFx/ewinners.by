@@ -29,18 +29,27 @@ export function mtbankConfig() {
   const baseUrl = env('MTBANK_BASE_URL', 'https://openapi.mtbank.by').replace(/\/$/, '');
   const pathPrefix = env('MTBANK_PATH_PREFIX', '/oapi-channel/open-banking/v1.0').replace(/\/$/, '');
   const consentId = env('MTBANK_CONSENT_ID');
+  // MTBank может выдать несколько согласий: например, отдельно на КЦ и на
+  // HR/Digital. Список consentIds позволяет читать счета из всех сразу.
+  const extraConsentIds = String(env('MTBANK_CONSENT_IDS') || '')
+    .split(/[,;\s]+/)
+    .map((id) => id.trim())
+    .filter(Boolean);
+  const consentIds = [...new Set([consentId, ...extraConsentIds].filter(Boolean))];
+  const primaryConsentId = consentId || consentIds[0] || '';
   const accountId = env('MTBANK_ACCOUNT_ID');
   const accountIban = env('MTBANK_ACCOUNT_IBAN', env('COMPANY_IBAN')).replace(/\s+/g, '').toUpperCase();
   const insecureTls = env('MTBANK_INSECURE_TLS', '1') !== '0';
   const statementMode = env('MTBANK_STATEMENT_MODE', 'transactions').toLowerCase();
   const configured = Boolean(apiKey);
-  const ready = Boolean(apiKey && consentId && (accountId || accountIban));
+  const ready = Boolean(apiKey && consentIds.length && (accountId || accountIban));
   return {
     apiKey,
     proxy,
     baseUrl,
     pathPrefix,
-    consentId,
+    consentId: primaryConsentId,
+    consentIds,
     accountId,
     accountIban,
     insecureTls,
@@ -86,6 +95,7 @@ export function mtbankRequest({
   body,
   headers = {},
   timeoutSec = 60,
+  consentId = null,
 } = {}) {
   const cfg = mtbankConfig();
   if (!cfg.apiKey) {
@@ -108,8 +118,12 @@ export function mtbankRequest({
     'x-fapi-interaction-id': interactionId,
     ...headers,
   };
-  if (cfg.consentId && !reqHeaders['X-accountConsentId'] && !reqHeaders['x-accountConsentId']) {
-    reqHeaders['X-accountConsentId'] = cfg.consentId;
+  const headerConsentId = consentId || cfg.consentId;
+  const hasConsentHeader = Object.keys(reqHeaders).some(
+    (key) => key.toLowerCase() === 'x-accountconsentid',
+  );
+  if (headerConsentId && !hasConsentHeader) {
+    reqHeaders['X-accountConsentId'] = headerConsentId;
   }
   if (method === 'POST' || method === 'PUT' || method === 'PATCH') {
     reqHeaders['x-idempotency-key'] = reqHeaders['x-idempotency-key'] || randomUUID();
@@ -167,6 +181,47 @@ export function mtbankRequest({
       resolve({ status, payload, interactionId, url });
     });
   });
+}
+
+const RETRYABLE_HTTP = new Set([403, 408, 425, 429, 500, 502, 503, 504]);
+
+function isRetryableTransportError(message) {
+  return /curl:|SSL|OpenSSL|unexpected eof|ETIMEDOUT|ECONNRESET|EPIPE|socket hang up|timeout/i.test(
+    String(message || ''),
+  );
+}
+
+/**
+ * Обёртка над mtbankRequest с короткими повторами.
+ *
+ * AvTunProxy и MTBank периодически отвечают 403/SSL EOF на первый запрос,
+ * хотя следующий проходит. Повторяем только временные ошибки; для POST
+ * используем один и тот же x-idempotency-key, чтобы банк не создал дубль.
+ */
+export async function mtbankRequestRetry(options = {}, attempts = 3) {
+  const headers = { ...(options.headers || {}) };
+  const hasIdempotencyKey = Object.keys(headers).some(
+    (key) => key.toLowerCase() === 'x-idempotency-key',
+  );
+  if (!hasIdempotencyKey) headers['x-idempotency-key'] = randomUUID();
+
+  let lastResult = null;
+  let lastError = null;
+
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    if (attempt > 0) await sleep(500 * attempt);
+    try {
+      const result = await mtbankRequest({ ...options, headers });
+      if (!RETRYABLE_HTTP.has(Number(result.status))) return result;
+      lastResult = result;
+    } catch (err) {
+      if (!isRetryableTransportError(err.message)) throw err;
+      lastError = err;
+    }
+  }
+
+  if (lastResult) return lastResult;
+  throw lastError || new Error('MTBank: запрос не удался');
 }
 
 function apiPath(suffix) {
@@ -229,7 +284,7 @@ export async function createAccountConsent({ expirationDateTime } = {}) {
     },
     risk: {},
   };
-  const { status, payload } = await mtbankRequest({
+  const { status, payload } = await mtbankRequestRetry({
     method: 'POST',
     path: apiPath('/accountConsents'),
     body,
@@ -246,9 +301,10 @@ export async function createAccountConsent({ expirationDateTime } = {}) {
 
 export async function getAccountConsent(consentId = mtbankConfig().consentId) {
   if (!consentId) throw new Error('Не указан MTBANK_CONSENT_ID');
-  const { status, payload } = await mtbankRequest({
+  const { status, payload } = await mtbankRequestRetry({
     method: 'GET',
     path: apiPath(`/accountConsents/${encodeURIComponent(consentId)}`),
+    consentId,
   });
   if (status < 200 || status >= 300) {
     throw new Error(extractErrorMessage(payload, status));
@@ -264,7 +320,7 @@ function unwrapAccountList(payload) {
   return [];
 }
 
-function mapAccount(raw, fallbackIban) {
+function mapAccount(raw, fallbackIban, consentId = null) {
   const iban = String(
     pick(raw, ['IBAN', 'iban', 'identification', 'Identification', 'accountNumber', 'AccountNumber']) ||
       raw?.accountDetails?.identification ||
@@ -301,32 +357,84 @@ function mapAccount(raw, fallbackIban) {
         'AccountDescription',
       ]) || 'Расчётный счёт',
     ),
+    consentId: consentId || null,
     raw,
   };
 }
 
+/**
+ * Счета по всем согласиям сразу.
+ *
+ * У одного согласия может быть один счёт, у другого — два. Обходим все
+ * consentIds и помечаем каждый счёт своим consentId: дальше баланс и
+ * транзакции запрашиваются уже с правильным X-accountConsentId.
+ */
 export async function listAccounts() {
   const cfg = mtbankConfig();
-  const { status, payload } = await mtbankRequest({
-    method: 'GET',
-    path: apiPath('/accounts'),
-  });
-  if (status < 200 || status >= 300) {
-    throw new Error(extractErrorMessage(payload, status));
+  const consentIds = cfg.consentIds.length ? cfg.consentIds : [cfg.consentId].filter(Boolean);
+  if (!consentIds.length) throw new Error('Не указан MTBANK_CONSENT_ID');
+
+  const results = await Promise.allSettled(
+    consentIds.map(async (cid) => {
+      const { status, payload } = await mtbankRequestRetry({
+        method: 'GET',
+        path: apiPath('/accounts'),
+        consentId: cid,
+      });
+      if (status < 200 || status >= 300) {
+        throw new Error(`Согласие ${cid}: ${extractErrorMessage(payload, status)}`);
+      }
+      return unwrapAccountList(payload).map((a) => mapAccount(a, cfg.accountIban, cid));
+    }),
+  );
+
+  const accounts = [];
+  const errors = [];
+  for (const result of results) {
+    if (result.status === 'fulfilled') accounts.push(...result.value);
+    else errors.push(result.reason?.message || String(result.reason));
   }
-  return unwrapAccountList(payload).map((a) => mapAccount(a, cfg.accountIban));
+
+  // Один и тот же счёт может быть в двух согласиях — оставляем первый.
+  const seen = new Set();
+  const unique = accounts.filter((account) => {
+    const key = account.iban || account.id;
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+
+  if (!unique.length) {
+    throw new Error(errors[0] || 'MTBank: не удалось получить счета ни по одному согласию');
+  }
+  if (errors.length) {
+    console.warn('[mtbank] часть согласий недоступна:', errors.join('; '));
+  }
+  return unique;
+}
+
+/** Счёт по умолчанию: MTBANK_ACCOUNT_ID, затем MTBANK_ACCOUNT_IBAN, затем первый. */
+export async function resolveAccount() {
+  const cfg = mtbankConfig();
+  const accounts = await listAccounts();
+  if (!accounts.length) throw new Error('MTBank: счета не найдены. Проверьте согласие и авторизацию.');
+
+  if (cfg.accountId) {
+    const byId = accounts.find((a) => String(a.id) === String(cfg.accountId));
+    if (byId) return byId;
+  }
+  if (cfg.accountIban) {
+    const match = accounts.find((a) => a.iban.replace(/\s/g, '') === cfg.accountIban);
+    if (match) return match;
+    console.warn(
+      `[mtbank] счёт ${cfg.accountIban} не найден ни в одном согласии, беру ${accounts[0].iban}`,
+    );
+  }
+  return accounts[0];
 }
 
 export async function resolveAccountId() {
-  const cfg = mtbankConfig();
-  if (cfg.accountId) return cfg.accountId;
-  const accounts = await listAccounts();
-  if (!accounts.length) throw new Error('MTBank: счета не найдены. Проверьте согласие и авторизацию.');
-  if (cfg.accountIban) {
-    const match = accounts.find((a) => a.iban.replace(/\s/g, '') === cfg.accountIban);
-    if (match) return match.id;
-  }
-  return accounts[0].id;
+  return (await resolveAccount()).id;
 }
 
 /**
@@ -345,14 +453,15 @@ const BALANCE_TYPE_PREFERENCE = [
   'XPCD', // expected
 ];
 
-export async function fetchAccountBalance(accountId) {
+export async function fetchAccountBalance(accountId, consentId = null) {
   const cfg = mtbankConfig();
   const id = accountId || cfg.accountId;
   if (!id) return null;
 
-  const { status, payload } = await mtbankRequest({
+  const { status, payload } = await mtbankRequestRetry({
     method: 'GET',
     path: apiPath(`/accounts/${encodeURIComponent(id)}/balances`),
+    consentId,
   });
   if (status < 200 || status >= 300) {
     throw new Error(extractErrorMessage(payload, status));
@@ -535,17 +644,18 @@ const LIST_READY_TIMEOUT_MS = 90_000;
 const PAGE_SIZE = 25; // bank's maximumEntriesAllowedPerPage
 const MAX_LIST_PAGES = 60; // 60 x 25 = 1500 entries, well past the bank's history
 
-async function waitForTransactionList(accountId, listId) {
+async function waitForTransactionList(accountId, listId, consentId = null) {
   const deadline = Date.now() + LIST_READY_TIMEOUT_MS;
   let delay = 1000;
   let lastStatus = null;
 
   while (Date.now() < deadline) {
-    const got = await mtbankRequest({
+    const got = await mtbankRequestRetry({
       method: 'GET',
       path: apiPath(
         `/accounts/${encodeURIComponent(accountId)}/transactions/${encodeURIComponent(listId)}`,
       ),
+      consentId,
     });
     // 202 and 404 both mean "still being prepared" — check before the 2xx test,
     // because 202 also falls inside the 2xx range.
@@ -566,7 +676,7 @@ async function waitForTransactionList(accountId, listId) {
   );
 }
 
-async function fetchViaTransactions(accountId, from, to) {
+async function fetchViaTransactions(accountId, from, to, consentId = null) {
   // MTBank builds the list asynchronously:
   //   POST /accounts/{id}/transactions          -> { data: { transaction: { transactionListId } } }
   //   GET  /accounts/{id}/transactions/{listId} -> { data: { transaction: [...] }, meta: {...} }
@@ -574,7 +684,7 @@ async function fetchViaTransactions(accountId, from, to) {
   const fromIso = dayjs(from).startOf('day').format('YYYY-MM-DDTHH:mm:ssZ');
   const toIso = dayjs(to).endOf('day').format('YYYY-MM-DDTHH:mm:ssZ');
 
-  const create = await mtbankRequest({
+  const create = await mtbankRequestRetry({
     method: 'POST',
     path: apiPath(`/accounts/${encodeURIComponent(accountId)}/transactions`),
     body: {
@@ -587,6 +697,7 @@ async function fetchViaTransactions(accountId, from, to) {
       },
       risk: {},
     },
+    consentId,
   });
   if (create.status < 200 || create.status >= 300) {
     throw new Error(extractErrorMessage(create.payload, create.status));
@@ -606,7 +717,7 @@ async function fetchViaTransactions(accountId, from, to) {
     throw new Error('MTBank: не получен transactionListId после создания перечня транзакций');
   }
 
-  const first = await waitForTransactionList(accountId, listId);
+  const first = await waitForTransactionList(accountId, listId, consentId);
 
   const meta = first?.meta || first?.Meta || {};
   const totalPages = Math.max(1, Number(pick(meta, ['totalPages', 'TotalPages']) || 1) || 1);
@@ -614,13 +725,14 @@ async function fetchViaTransactions(accountId, from, to) {
 
   let all = extractTransactions(first);
   for (let page = 2; page <= pages; page += 1) {
-    const got = await mtbankRequest({
+    const got = await mtbankRequestRetry({
       method: 'GET',
       path: apiPath(
         `/accounts/${encodeURIComponent(accountId)}/transactions/${encodeURIComponent(
           listId,
         )}?page=${page}&size=${PAGE_SIZE}`,
       ),
+      consentId,
     });
     // Keep whatever we already collected if a later page fails.
     if (got.status < 200 || got.status >= 300) break;
@@ -639,10 +751,10 @@ async function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-async function fetchViaStatements(accountId, from, to) {
+async function fetchViaStatements(accountId, from, to, consentId = null) {
   // Per the spec the collection path is /statements/{accountId}; the old code
   // posted to /accounts/{accountId}/statements and the bank answered 404.
-  const create = await mtbankRequest({
+  const create = await mtbankRequestRetry({
     method: 'POST',
     path: apiPath(`/statements/${encodeURIComponent(accountId)}`),
     body: {
@@ -655,6 +767,7 @@ async function fetchViaStatements(accountId, from, to) {
       },
       risk: {},
     },
+    consentId,
   });
   if (create.status < 200 || create.status >= 300) {
     throw new Error(extractErrorMessage(create.payload, create.status));
@@ -681,11 +794,12 @@ async function fetchViaStatements(accountId, from, to) {
   let lastErr = null;
   for (let attempt = 0; attempt < 8; attempt += 1) {
     if (attempt > 0) await sleep(800 * attempt);
-    const got = await mtbankRequest({
+    const got = await mtbankRequestRetry({
       method: 'GET',
       path: apiPath(
         `/accounts/${encodeURIComponent(accountId)}/statements/${encodeURIComponent(statementId)}`,
       ),
+      consentId,
     });
     if (got.status === 404 || got.status === 202) {
       lastErr = new Error(extractErrorMessage(got.payload, got.status));
@@ -707,6 +821,7 @@ export async function getMtbankStatus() {
     accountIban: cfg.accountIban || null,
     accountId: cfg.accountId || null,
     consentId: cfg.consentId || null,
+    consentIds: cfg.consentIds,
     apiBase: cfg.baseUrl || null,
     proxy: cfg.proxy || null,
     provider: 'mtbank',
@@ -764,7 +879,7 @@ export async function fetchMtbankStatement({ from, to, refresh = false, iban } =
     throw new Error('Укажите период from и to (YYYY-MM-DD)');
   }
 
-  if (!cfg.consentId) {
+  if (!cfg.consentIds.length) {
     return {
       configured: true,
       ready: false,
@@ -782,50 +897,46 @@ export async function fetchMtbankStatement({ from, to, refresh = false, iban } =
     };
   }
 
-  // IBAN входит в ключ кэша: иначе выписка одного счёта на минуту подменит
-  // выписку другого счёта того же согласия.
+  // IBAN и набор согласий входят в ключ кэша: иначе выписка одного счёта
+  // на минуту подменит выписку другого.
   const requestedIban = String(iban || '').replace(/\s+/g, '').toUpperCase();
-  const cacheKey = `${cfg.consentId}|${cfg.accountId || cfg.accountIban || ''}|${requestedIban}|${dateFrom}|${dateTo}`;
+  const cacheKey = `${cfg.consentIds.join(',')}|${cfg.accountId || cfg.accountIban || ''}|${requestedIban}|${dateFrom}|${dateTo}`;
   if (!refresh) {
     const cached = cacheGet(cacheKey);
     if (cached) return cached;
   }
 
-  // Если админ выбрал конкретный счёт — берём его, иначе счёт по умолчанию
-  let accountId;
+  // Если админ выбрал конкретный счёт — берём его из любого согласия,
+  // иначе счёт по умолчанию (MTBANK_ACCOUNT_ID / MTBANK_ACCOUNT_IBAN).
+  let selectedAccount;
   if (iban) {
     const wanted = String(iban).replace(/\s+/g, '').toUpperCase();
     const accounts = await listAccounts();
-    const found = accounts.find((a) => String(a.iban || '').replace(/\s+/g, '').toUpperCase() === wanted);
-    if (!found) throw new Error(`MTBank: счёт ${wanted} не найден в согласии`);
-    accountId = found.id;
+    selectedAccount = accounts.find(
+      (a) => String(a.iban || '').replace(/\s+/g, '').toUpperCase() === wanted,
+    );
+    if (!selectedAccount) throw new Error(`MTBank: счёт ${wanted} не найден ни в одном согласии`);
   } else {
-    accountId = await resolveAccountId();
+    selectedAccount = await resolveAccount();
   }
+
+  const accountId = selectedAccount.id;
+  const consentId = selectedAccount.consentId || cfg.consentId;
   let accountMeta = {
-    id: accountId,
-    iban: cfg.accountIban || null,
-    currency: 'BYN',
+    ...selectedAccount,
     balance: null,
-    name: 'Расчётный счёт MTBank',
+    currency: selectedAccount.currency || 'BYN',
+    name: selectedAccount.name || 'Расчётный счёт MTBank',
   };
 
-  // Accounts, balance and movements are independent calls — run them together
-  // so the page pays for one round trip instead of three.
+  // Balance and movements are independent calls — run them together.
   const useStatements = cfg.statementMode === 'statements';
-  const [accountsResult, balanceResult, txsResult] = await Promise.allSettled([
-    listAccounts(),
-    fetchAccountBalance(accountId),
+  const [balanceResult, txsResult] = await Promise.allSettled([
+    fetchAccountBalance(accountId, consentId),
     useStatements
-      ? fetchViaStatements(accountId, dateFrom, dateTo)
-      : fetchViaTransactions(accountId, dateFrom, dateTo),
+      ? fetchViaStatements(accountId, dateFrom, dateTo, consentId)
+      : fetchViaTransactions(accountId, dateFrom, dateTo, consentId),
   ]);
-
-  if (accountsResult.status === 'fulfilled') {
-    const accounts = accountsResult.value || [];
-    const found = accounts.find((a) => a.id === accountId) || accounts[0];
-    if (found) accountMeta = { ...accountMeta, ...found };
-  }
 
   if (balanceResult.status === 'fulfilled' && balanceResult.value) {
     accountMeta.balance = balanceResult.value.amount;
@@ -845,7 +956,7 @@ export async function fetchMtbankStatement({ from, to, refresh = false, iban } =
     rawTxs = txsResult.value;
   } else if (!useStatements) {
     // Fallback to the async statements flow used by some BY banks
-    rawTxs = await fetchViaStatements(accountId, dateFrom, dateTo);
+    rawTxs = await fetchViaStatements(accountId, dateFrom, dateTo, consentId);
   } else {
     throw txsResult.reason;
   }
@@ -931,54 +1042,70 @@ export async function fetchAllAccountsStatement({ from, to, refresh = false } = 
     throw new Error('MTBank: согласие не даёт доступа ни к одному счёту. Авторизуйте счета в кабинете MTBank.');
   }
 
-  const results = [];
-  const movements = [];
+  // Счета опрашиваем параллельно: у каждого свой consentId, а банк строит
+  // перечень транзакций асинхронно. Последовательный обход трёх счетов
+  // растягивал загрузку направления на десятки секунд.
+  const perAccount = await Promise.all(
+    accounts.map(async (account) => {
+      try {
+        const [balanceResult, txsResult] = await Promise.allSettled([
+          fetchAccountBalance(account.id, account.consentId),
+          fetchViaTransactions(
+            account.id,
+            String(from).slice(0, 10),
+            String(to).slice(0, 10),
+            account.consentId,
+          ),
+        ]);
 
-  for (const account of accounts) {
-    try {
-      const [balanceResult, txsResult] = await Promise.allSettled([
-        fetchAccountBalance(account.id),
-        fetchViaTransactions(account.id, String(from).slice(0, 10), String(to).slice(0, 10)),
-      ]);
+        const balance =
+          balanceResult.status === 'fulfilled' && balanceResult.value
+            ? balanceResult.value.amount
+            : null;
 
-      const balance =
-        balanceResult.status === 'fulfilled' && balanceResult.value
-          ? balanceResult.value.amount
-          : null;
+        let rows = [];
+        if (txsResult.status === 'fulfilled') {
+          rows = txsResult.value || [];
+        } else {
+          // Резервный путь через асинхронные выписки
+          rows = (await fetchViaStatements(account.id, from, to, account.consentId)) || [];
+        }
 
-      let rows = [];
-      if (txsResult.status === 'fulfilled') {
-        rows = txsResult.value || [];
-      } else {
-        // Резервный путь через асинхронные выписки
-        rows = (await fetchViaStatements(account.id, from, to)) || [];
+        const mapped = rows.map((row, i) => ({
+          ...normalizeMtbankMovement(row, i),
+          accountIban: account.iban,
+          accountName: account.name || null,
+        }));
+
+        const income = mapped
+          .filter((m) => m.direction === 'income')
+          .reduce((s, m) => s + Number(m.amount || 0), 0);
+        const expense = mapped
+          .filter((m) => m.direction === 'expense')
+          .reduce((s, m) => s + Number(m.amount || 0), 0);
+
+        return {
+          account: { ...account, balance, income, expense, count: mapped.length },
+          movements: mapped,
+        };
+      } catch (err) {
+        return {
+          account: {
+            ...account,
+            balance: null,
+            income: 0,
+            expense: 0,
+            count: 0,
+            error: err.message,
+          },
+          movements: [],
+        };
       }
+    }),
+  );
 
-      const mapped = rows.map((row, i) => ({
-        ...normalizeMtbankMovement(row, i),
-        accountIban: account.iban,
-        accountName: account.name || null,
-      }));
-      movements.push(...mapped);
-
-      const income = mapped
-        .filter((m) => m.direction === 'income')
-        .reduce((s, m) => s + Number(m.amount || 0), 0);
-      const expense = mapped
-        .filter((m) => m.direction === 'expense')
-        .reduce((s, m) => s + Number(m.amount || 0), 0);
-
-      results.push({
-        ...account,
-        balance,
-        income,
-        expense,
-        count: mapped.length,
-      });
-    } catch (err) {
-      results.push({ ...account, balance: null, income: 0, expense: 0, count: 0, error: err.message });
-    }
-  }
+  const results = perAccount.map((item) => item.account);
+  const movements = perAccount.flatMap((item) => item.movements);
 
   return {
     configured: true,

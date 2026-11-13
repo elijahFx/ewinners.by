@@ -11,7 +11,9 @@
     "reset:handoff": "node src/resetForHandoff.js",
     "create:techadmin": "node src/createTechAdmin.js",
     "create:admin": "node src/createAdmin.js",
-    "tariffs:project": "node src/setupProjectTariffs.js"
+    "tariffs:project": "node src/setupProjectTariffs.js",
+    "acts:generate": "node src/generateMonthlyActs.js",
+    "bank:dedupe": "node src/cleanupBankPayments.js"
   },
   "dependencies": {
     "bcrypt": "^6.0.0",

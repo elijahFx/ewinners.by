@@ -1,69 +1,7 @@
 import dayjs from 'dayjs';
 import { query } from '../db.js';
-import { generateActPdf } from './actPdf.js';
 import { generateDetailPdf } from './detailPdf.js';
 import { queueDocumentBackup } from './yandexBackup.js';
-
-export async function ensureActForInvoice(invoice, company) {
-  const existing = await query(
-    `SELECT * FROM documents
-     WHERE company_id = :company_id AND type = 'act' AND number = :number
-     LIMIT 1`,
-    { company_id: invoice.company_id, number: invoice.number },
-  );
-  if (existing[0]?.file_path) {
-    queueDocumentBackup(existing[0]);
-    return existing[0];
-  }
-
-  const { filePath } = await generateActPdf({
-    number: invoice.number,
-    amount: invoice.amount,
-    purpose: invoice.purpose,
-    company,
-    createdAt: dayjs(invoice.paid_at || invoice.created_at).format('DD.MM.YYYY'),
-    paidAt: invoice.paid_at ? dayjs(invoice.paid_at).format('DD.MM.YYYY') : null,
-  });
-
-  if (existing[0]) {
-    await query(
-      `UPDATE documents SET file_path = :file_path, status = 'paid', amount = :amount, title = :title
-       WHERE id = :id`,
-      {
-        id: existing[0].id,
-        file_path: filePath,
-        amount: invoice.amount,
-        title: `Акт оказанных услуг ${invoice.number}`,
-      },
-    );
-    const rows = await query('SELECT * FROM documents WHERE id = :id', { id: existing[0].id });
-    queueDocumentBackup(rows[0]);
-    return rows[0];
-  }
-
-  const result = await query(
-    `INSERT INTO documents (company_id, type, number, title, amount, status, project_id, file_path)
-     VALUES (:company_id, 'act', :number, :title, :amount, 'paid', :project_id, :file_path)`,
-    {
-      company_id: invoice.company_id,
-      number: invoice.number,
-      title: `Акт оказанных услуг ${invoice.number}`,
-      amount: invoice.amount,
-      project_id: invoice.project_id || null,
-      file_path: filePath,
-    },
-  );
-
-  await query(
-    `UPDATE documents SET status = 'paid'
-     WHERE company_id = :company_id AND type = 'invoice' AND number = :number`,
-    { company_id: invoice.company_id, number: invoice.number },
-  );
-
-  const rows = await query('SELECT * FROM documents WHERE id = :id', { id: result.insertId });
-  queueDocumentBackup(rows[0]);
-  return rows[0];
-}
 
 export async function ensureDetailDocument(companyId, company, options = {}) {
   const periodStart = options.from

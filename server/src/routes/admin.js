@@ -14,6 +14,7 @@ import { generateStrongPassword } from '../services/passwords.js';
 import { absoluteAvatarPath, createAvatarUpload } from '../services/avatars.js';
 import { setCompanyApiKey } from '../services/apiKeys.js';
 import { buildReconciliationReport, recoverMissingOrders } from '../services/reconciliation.js';
+import { chargePendingById, cancelPendingCharge } from '../services/salesrenderPending.js';
 import {
   createPlaceholderPasswordHash,
   isMailConfigured,
@@ -27,7 +28,10 @@ import {
 } from '../services/mtbank.js';
 import { syncMtbankPayments } from '../services/bankSync.js';
 import { markInvoicePaid } from '../services/invoicePayment.js';
+import { afterBalanceChange, reconcileCompanyState } from '../services/financialState.js';
 import { generateInvoicePdf } from '../services/invoicePdf.js';
+import { accountForDirection } from '../services/accounts.js';
+import { emitBalanceChanged } from '../services/balanceEvents.js';
 
 async function loadInvoicePdf(invoice) {
   const companies = await query('SELECT * FROM companies WHERE id = :id LIMIT 1', {
@@ -45,6 +49,8 @@ async function loadInvoicePdf(invoice) {
     purpose: invoice.purpose,
     company,
     createdAt: dayjs(invoice.created_at).format('DD.MM.YYYY'),
+    // Счёт направления: без этого при просмотре подставлялся основной счёт КЦ.
+    iban: invoice.account_iban || undefined,
   });
   await query('UPDATE invoices SET file_path = :file_path WHERE id = :id', {
     file_path: filePath,
@@ -123,7 +129,14 @@ router.get('/overview', async (_req, res) => {
   }
 });
 
-router.get('/companies', async (_req, res) => {
+router.get('/companies', async (req, res) => {
+  const params = {};
+  let where = 'WHERE c.is_oneoff = 0';
+  const direction = String(req.query.direction || '').toLowerCase();
+  if (['hr', 'digital', 'kc'].includes(direction)) {
+    where += ' AND c.direction = :direction';
+    params.direction = direction;
+  }
   // has_own_tariffs = у клиента индивидуальный прайс (общие цены ему не применяются)
   const rows = await query(
     `SELECT c.*,
@@ -137,7 +150,9 @@ router.get('/companies', async (_req, res) => {
                FROM company_salesrender_projects p
               WHERE p.company_id = c.id) AS extra_salesrender_ids
      FROM companies c
+     ${where}
      ORDER BY c.id DESC`,
+    params,
   );
   res.json({ items: rows });
 });
@@ -235,18 +250,77 @@ router.post('/reconciliation/recover', requireRoles('admin'), async (req, res) =
   }
 });
 
+router.post('/reconciliation/pending/:id/charge', requireRoles('admin'), async (req, res) => {
+  try {
+    const result = await chargePendingById(req.params.id);
+    if (!result.ok) {
+      return res.status(result.stopped ? 409 : 400).json({
+        error: result.error || 'Не удалось списать заказ',
+        ...result,
+      });
+    }
+    await reconcileCompanyState(result.companyId);
+    await audit(req.user.id, 'reconciliation.pending_charge', 'salesrender_pending', Number(req.params.id), {
+      companyId: result.companyId,
+      amount: result.amount,
+      transactionId: result.transactionId,
+    });
+    res.json(result);
+  } catch (err) {
+    console.error(err);
+    res.status(err.status || 500).json({ error: err.message || 'Не удалось списать заказ' });
+  }
+});
+
+router.post('/reconciliation/pending/:id/cancel', requireRoles('admin'), async (req, res) => {
+  try {
+    const reason = String(req.body?.reason || '').trim();
+    const result = await cancelPendingCharge(req.params.id, { reason, userId: req.user.id });
+    await reconcileCompanyState(result.companyId);
+    await audit(req.user.id, 'reconciliation.pending_cancel', 'salesrender_pending', Number(req.params.id), {
+      companyId: result.companyId,
+      reason,
+    });
+    res.json(result);
+  } catch (err) {
+    console.error(err);
+    res.status(err.status || 500).json({ error: err.message || 'Не удалось отменить заказ' });
+  }
+});
+
+router.post('/companies/:id/reconcile', requireRoles('admin', 'accountant'), async (req, res) => {
+  try {
+    const result = await reconcileCompanyState(Number(req.params.id));
+    if (!result) return res.status(404).json({ error: 'Компания не найдена' });
+    await audit(req.user.id, 'company.financial_reconcile', 'company', Number(req.params.id), {
+      blocked: result.blocked,
+      dryRun: result.dryRun,
+      available: result.available,
+    });
+    res.json(result);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message || 'Не удалось пересчитать состояние' });
+  }
+});
+
 router.post('/companies', requireRoles('admin'), async (req, res) => {
   try {
     const name = String(req.body.name || '').trim();
     if (!name) return res.status(400).json({ error: 'Укажите название компании' });
 
+    const direction = ['hr', 'digital', 'kc'].includes(
+      String(req.body.direction || '').toLowerCase(),
+    )
+      ? String(req.body.direction).toLowerCase()
+      : 'kc';
     const result = await query(
       `INSERT INTO companies
         (name, unp, legal_address, bank_name, iban, bic, credit_limit, min_balance, notify_threshold,
-         low_balance_action, buyout_enabled, salesrender_id, manager_name, manager_phone, manager_email)
+         low_balance_action, direction, buyout_enabled, salesrender_id, manager_name, manager_phone, manager_email)
        VALUES
         (:name, :unp, :legal_address, :bank_name, :iban, :bic, :credit_limit, :min_balance, :notify_threshold,
-         :low_balance_action, :buyout_enabled, :salesrender_id, :manager_name, :manager_phone, :manager_email)`,
+         :low_balance_action, :direction, :buyout_enabled, :salesrender_id, :manager_name, :manager_phone, :manager_email)`,
       {
         name,
         unp: req.body.unp || null,
@@ -258,6 +332,7 @@ router.post('/companies', requireRoles('admin'), async (req, res) => {
         min_balance: Number(req.body.minBalance || 0),
         notify_threshold: Number(req.body.notifyThreshold || 500),
         low_balance_action: req.body.lowBalanceAction || 'allow_credit',
+        direction,
         buyout_enabled: req.body.buyoutEnabled ? 1 : 0,
         salesrender_id: String(req.body.salesrenderId ?? '').trim() || null,
         manager_name: req.body.managerName || null,
@@ -293,6 +368,7 @@ router.patch('/companies/:id', requireRoles('admin'), async (req, res) => {
          min_balance = COALESCE(:min_balance, min_balance),
          notify_threshold = COALESCE(:notify_threshold, notify_threshold),
          low_balance_action = COALESCE(:low_balance_action, low_balance_action),
+         direction = COALESCE(:direction, direction),
          buyout_enabled = COALESCE(:buyout_enabled, buyout_enabled),
          salesrender_id = IF(:salesrender_set, :salesrender_id, salesrender_id),
          manager_name = COALESCE(:manager_name, manager_name),
@@ -312,6 +388,11 @@ router.patch('/companies/:id', requireRoles('admin'), async (req, res) => {
         min_balance: req.body.minBalance ?? null,
         notify_threshold: req.body.notifyThreshold ?? null,
         low_balance_action: req.body.lowBalanceAction ?? null,
+        direction: ['hr', 'digital', 'kc'].includes(
+          String(req.body.direction || '').toLowerCase(),
+        )
+          ? String(req.body.direction).toLowerCase()
+          : null,
         // Галочка «Отдел выкупа»: +1,50 BYN за выкупленный заказ.
         buyout_enabled:
           req.body.buyoutEnabled === undefined ? null : req.body.buyoutEnabled ? 1 : 0,
@@ -335,6 +416,101 @@ router.patch('/companies/:id', requireRoles('admin'), async (req, res) => {
       return res.status(409).json({ error: 'Такой SalesRender ID уже привязан к другому клиенту' });
     }
     res.status(500).json({ error: 'Не удалось обновить компанию' });
+  }
+});
+
+router.delete('/companies/:id', requireRoles('admin'), async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const companies = await query('SELECT * FROM companies WHERE id = :id LIMIT 1', { id });
+    const company = companies[0];
+    if (!company) return res.status(404).json({ error: 'Клиент не найден' });
+
+    const [counts] = await Promise.all([
+      (async () => {
+        const result = {};
+        const checks = {
+          transactions: 'SELECT COUNT(*) c FROM transactions WHERE company_id = :id',
+          invoices: 'SELECT COUNT(*) c FROM invoices WHERE company_id = :id',
+          paidInvoices:
+            "SELECT COUNT(*) c FROM invoices WHERE company_id = :id AND (status IN ('paid','partially_paid') OR paid_amount > 0 OR paid_at IS NOT NULL)",
+          projects: 'SELECT COUNT(*) c FROM projects WHERE company_id = :id',
+          userLinks: 'SELECT COUNT(*) c FROM user_companies WHERE company_id = :id',
+          users: 'SELECT COUNT(*) c FROM users WHERE company_id = :id',
+          bankPayments: 'SELECT COUNT(*) c FROM bank_payments WHERE company_id = :id',
+          pending: "SELECT COUNT(*) c FROM salesrender_pending_charges WHERE company_id = :id AND status = 'pending'",
+          srProjects: 'SELECT COUNT(*) c FROM company_salesrender_projects WHERE company_id = :id',
+          srArchived: 'SELECT COUNT(*) c FROM salesrender_project_state WHERE company_id = :id AND archived_by_us = 1',
+        };
+        for (const [key, sql] of Object.entries(checks)) {
+          const rows = await query(sql, { id });
+          result[key] = Number(rows[0]?.c || 0);
+        }
+        return result;
+      })(),
+    ]);
+
+    const blockers = [];
+    if (Number(company.balance || 0) !== 0) blockers.push('на балансе есть деньги');
+    if (counts.transactions) blockers.push('есть операции по балансу');
+    if (counts.paidInvoices) blockers.push('есть оплаченные счета');
+    if (counts.projects) blockers.push('есть внутренние проекты');
+    if (counts.userLinks || counts.users) blockers.push('есть привязанные пользователи');
+    if (counts.bankPayments) blockers.push('есть банковские платежи');
+    if (counts.pending) blockers.push('есть заказы в пограничной зоне');
+    if (counts.srProjects || counts.srArchived) blockers.push('есть привязка к SalesRender');
+    if (company.salesrender_id && String(company.salesrender_id).trim() !== '') {
+      blockers.push('у клиента указан SalesRender ID');
+    }
+    if (blockers.length) {
+      return res.status(409).json({
+        error: `Клиента нельзя удалить: ${blockers.join('; ')}. Сначала отвяжите/закройте эти данные.`,
+      });
+    }
+
+    const documents = await query(
+      'SELECT file_path FROM documents WHERE company_id = :id AND file_path IS NOT NULL',
+      { id },
+    );
+    const invoices = await query(
+      'SELECT file_path FROM invoices WHERE company_id = :id AND file_path IS NOT NULL',
+      { id },
+    );
+    const files = [...new Set([...documents, ...invoices].map((row) => row.file_path).filter(Boolean))];
+
+    await withTransaction(async (conn) => {
+      await conn.execute('DELETE FROM salesrender_pending_charges WHERE company_id = ?', [id]);
+      await conn.execute('DELETE FROM salesrender_project_state WHERE company_id = ?', [id]);
+      await conn.execute('DELETE FROM company_financial_state WHERE company_id = ?', [id]);
+      await conn.execute('DELETE FROM documents WHERE company_id = ?', [id]);
+      await conn.execute('DELETE FROM invoices WHERE company_id = ?', [id]);
+      await conn.execute('DELETE FROM tariffs WHERE company_id = ?', [id]);
+      await conn.execute('DELETE FROM company_salesrender_projects WHERE company_id = ?', [id]);
+      await conn.execute('DELETE FROM companies WHERE id = ?', [id]);
+    });
+
+    // Файлы удаляем после коммита и только если на них больше никто не ссылается.
+    for (const filePath of files) {
+      try {
+        const stillUsed = await query(
+          'SELECT COUNT(*) c FROM documents WHERE file_path = :file_path',
+          { file_path: filePath },
+        );
+        if (!Number(stillUsed[0]?.c || 0) && fs.existsSync(filePath)) fs.unlinkSync(filePath);
+      } catch (err) {
+        console.warn('Не удалось удалить файл документа:', filePath, err.message);
+      }
+    }
+
+    await audit(req.user.id, 'delete_company', 'company', id, {
+      name: company.name,
+      direction: company.direction,
+      invoices: counts.invoices,
+    });
+    res.json({ ok: true, deleted: id });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Не удалось удалить клиента' });
   }
 });
 
@@ -942,6 +1118,7 @@ router.post('/balance/adjust', requireRoles('admin', 'accountant'), async (req, 
       }),
     );
 
+    await afterBalanceChange(companyId, { credit: type === 'credit' });
     await notifyCompanyUsers(
       companyId,
       'Корректировка баланса',
@@ -1001,7 +1178,15 @@ router.get('/banking/movements', async (req, res) => {
       iban: req.query.account || null,
     });
     // Copy: the cached array must not be reordered in place by the sort below.
-    let items = [...(data.movements || [])];
+    // Банк иногда отдаёт движения шире запрошенного периода (по value date),
+    // поэтому дополнительно ограничиваем выборку датой, которую показываем.
+    const periodMovements = (data.movements || []).filter((m) => {
+      if (!m.date) return true;
+      if (from && String(m.date).slice(0, 10) < from) return false;
+      if (to && String(m.date).slice(0, 10) > to) return false;
+      return true;
+    });
+    let items = [...periodMovements];
     const direction = req.query.direction;
     if (direction === 'income' || direction === 'expense') {
       items = items.filter((m) => m.direction === direction);
@@ -1024,7 +1209,7 @@ router.get('/banking/movements', async (req, res) => {
       fetchedAt: data.fetchedAt,
       message: data.message,
       items,
-      summary: summarizeMovements(data.movements || []),
+      summary: summarizeMovements(periodMovements),
     });
   } catch (err) {
     console.error(err);
@@ -1456,32 +1641,14 @@ router.post('/payments/:id/credit', requireRoles('admin', 'accountant'), async (
       return applied;
     });
 
+    await afterBalanceChange(companyId, { credit: true });
+
     await notifyCompanyUsers(
       companyId,
       'Баланс пополнен',
-      `На баланс зачислено ${Number(payment.amount).toFixed(2)} BYN`,
+      `На баланс зачислено ${Number(payment.amount).toFixed(2)} BYN. ` +
+        'Акт оказанных услуг будет сформирован автоматически по итогам месяца.',
     );
-
-    if (invoiceId) {
-      try {
-        const invRows = await query('SELECT * FROM invoices WHERE id = :id LIMIT 1', { id: invoiceId });
-        const invoice = invRows[0];
-        const companyRows = await query('SELECT * FROM companies WHERE id = :id LIMIT 1', {
-          id: companyId,
-        });
-        if (invoice && companyRows[0]) {
-          const { ensureActForInvoice } = await import('../services/documents.js');
-          await ensureActForInvoice(invoice, companyRows[0]);
-          await notifyCompanyUsers(
-            companyId,
-            'Акт оказанных услуг',
-            `Сформирован акт ${invoice.number} (номер совпадает со счётом). Документ доступен в разделе «Документы».`,
-          );
-        }
-      } catch (err) {
-        console.warn('Act generation failed:', err.message);
-      }
-    }
 
     await audit(req.user.id, 'credit_payment', 'bank_payment', id, { companyId, invoiceId });
     res.json(result);
@@ -1600,6 +1767,18 @@ router.get('/invoices', async (req, res) => {
       sql += ' AND i.status = :status';
       params.status = String(req.query.status);
     }
+    // Счета показываем в разрезе выбранного направления. Старые счета без
+    // account_iban относим к КЦ — раньше счёт был один.
+    const direction = String(req.query.direction || '').toLowerCase();
+    if (['hr', 'digital', 'kc'].includes(direction)) {
+      const account = accountForDirection(direction);
+      if (direction === 'kc') {
+        sql += ' AND (i.account_iban = :direction_iban OR i.account_iban IS NULL)';
+      } else {
+        sql += ' AND i.account_iban = :direction_iban';
+      }
+      params.direction_iban = account.iban;
+    }
     const q = String(req.query.q || '').trim();
     if (q) {
       sql += ` AND (
@@ -1671,6 +1850,138 @@ router.post('/invoices/:id/mark-paid', requireRoles('admin', 'accountant'), asyn
   } catch (err) {
     console.error(err);
     res.status(err.status || 400).json({ error: err.message || 'Не удалось отметить счёт оплаченным' });
+  }
+});
+
+router.delete('/invoices/:id', requireRoles('admin'), async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const rows = await query('SELECT * FROM invoices WHERE id = :id LIMIT 1', { id });
+    const invoice = rows[0];
+    if (!invoice) return res.status(404).json({ error: 'Счёт не найден' });
+
+    const [debitTx, creditTx, bankPayments] = await Promise.all([
+      query(
+        "SELECT COUNT(*) c FROM transactions WHERE invoice_id = :id AND type = 'debit'",
+        { id },
+      ),
+      query(
+        "SELECT id, amount FROM transactions WHERE invoice_id = :id AND type = 'credit' AND status = 'posted'",
+        { id },
+      ),
+      query('SELECT COUNT(*) c FROM bank_payments WHERE invoice_id = :id AND status = \'credited\'', { id }),
+    ]);
+
+    if (Number(debitTx[0]?.c || 0) > 0) {
+      return res.status(409).json({
+        error: 'Нельзя удалить счёт: по нему есть списания с баланса',
+      });
+    }
+
+    const hasBankPayment = Number(bankPayments[0]?.c || 0) > 0;
+    const creditAmount = creditTx.reduce((sum, tx) => sum + Number(tx.amount || 0), 0);
+    // Ручное подтверждение оплаты отменяем вместе со счётом: это тестовое
+    // или ошибочное зачисление. Если счёт оплачен реальным банковским
+    // платежом, деньги остаются на балансе — удаляем только документ.
+    const shouldReverse = !hasBankPayment && creditAmount > 0;
+    const companyId = Number(invoice.company_id);
+    let balanceAfter = null;
+
+    const documents = await query(
+      `SELECT id, file_path FROM documents
+        WHERE company_id = :company_id AND number = :number AND type IN ('invoice','act')`,
+      { company_id: invoice.company_id, number: invoice.number },
+    );
+    const files = [
+      invoice.file_path,
+      ...documents.map((doc) => doc.file_path),
+    ].filter(Boolean);
+    const uniqueFiles = [...new Set(files)];
+
+    await withTransaction(async (conn) => {
+      if (shouldReverse) {
+        const [companyRows] = await conn.execute(
+          'SELECT balance FROM companies WHERE id = ? FOR UPDATE',
+          [companyId],
+        );
+        const company = companyRows[0];
+        if (!company) {
+          const err = new Error('Клиент не найден');
+          err.status = 404;
+          throw err;
+        }
+
+        const balanceBefore = Number(company.balance);
+        balanceAfter = Number((balanceBefore - creditAmount).toFixed(2));
+
+        await conn.execute('UPDATE companies SET balance = ? WHERE id = ?', [
+          balanceAfter,
+          companyId,
+        ]);
+        await conn.execute(
+          `INSERT INTO transactions
+            (company_id, invoice_id, type, category, amount, balance_before, balance_after,
+             comment, created_by, status)
+           VALUES (?, NULL, 'debit', 'recalc', ?, ?, ?, ?, ?, 'posted')`,
+          [
+            companyId,
+            creditAmount,
+            balanceBefore,
+            balanceAfter,
+            `Отмена зачисления по счёту ${invoice.number} при удалении счёта`,
+            req.user.id,
+          ],
+        );
+        await conn.execute(
+          `UPDATE transactions SET status = 'reversed'
+            WHERE invoice_id = ? AND type = 'credit' AND status = 'posted'`,
+          [id],
+        );
+      }
+
+      await conn.execute(
+        `DELETE FROM documents
+          WHERE company_id = ? AND number = ? AND type IN ('invoice','act')`,
+        [invoice.company_id, invoice.number],
+      );
+      await conn.execute('DELETE FROM invoices WHERE id = ?', [id]);
+    });
+
+    if (shouldReverse) {
+      await afterBalanceChange(companyId, { credit: false });
+      emitBalanceChanged({ companyId, balanceAfter, reason: 'invoice_deleted' });
+    }
+
+    for (const filePath of uniqueFiles) {
+      try {
+        const stillUsed = await query(
+          'SELECT COUNT(*) c FROM documents WHERE file_path = :file_path',
+          { file_path: filePath },
+        );
+        if (!Number(stillUsed[0]?.c || 0) && fs.existsSync(filePath)) fs.unlinkSync(filePath);
+      } catch (err) {
+        console.warn('Не удалось удалить файл счёта:', filePath, err.message);
+      }
+    }
+
+    await audit(req.user.id, 'delete_invoice', 'invoice', id, {
+      number: invoice.number,
+      companyId,
+      amount: invoice.amount,
+      balanceReversed: shouldReverse ? creditAmount : 0,
+      keptBankPayment: hasBankPayment,
+    });
+    res.json({
+      ok: true,
+      deleted: id,
+      number: invoice.number,
+      balanceReversed: shouldReverse ? creditAmount : 0,
+      balanceAfter,
+      keptBankPayment: hasBankPayment,
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(err.status || 500).json({ error: err.message || 'Не удалось удалить счёт' });
   }
 });
 

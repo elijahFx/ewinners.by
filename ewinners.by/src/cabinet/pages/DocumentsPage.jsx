@@ -22,6 +22,19 @@ function monthStartIso() {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-01`
 }
 
+function previousMonthIso() {
+  const d = new Date()
+  d.setDate(1)
+  d.setMonth(d.getMonth() - 1)
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
+}
+
+function monthEndIso(month) {
+  const [year, monthNumber] = String(month).split('-').map(Number)
+  const lastDay = new Date(year, monthNumber, 0).getDate()
+  return `${year}-${String(monthNumber).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`
+}
+
 export default function DocumentsPage() {
   const { user, company } = useAuth()
   const [items, setItems] = useState([])
@@ -31,6 +44,9 @@ export default function DocumentsPage() {
   const [emailTarget, setEmailTarget] = useState(null)
   const [from, setFrom] = useState(monthStartIso)
   const [to, setTo] = useState(todayIso)
+  const [actPanelOpen, setActPanelOpen] = useState(false)
+  const [actMonth, setActMonth] = useState(previousMonthIso)
+  const [actBusy, setActBusy] = useState(false)
 
   async function load(range = { from, to }) {
     const params = new URLSearchParams()
@@ -115,17 +131,108 @@ export default function DocumentsPage() {
     }
   }
 
+  async function requestAct(e) {
+    e?.preventDefault?.()
+    const companyId = company?.id || user?.companyId
+    if (!companyId) {
+      setError('Сначала выберите организацию')
+      return
+    }
+    if (!actMonth) {
+      setError('Выберите месяц')
+      return
+    }
+    setActBusy(true)
+    setError('')
+    setMessage('')
+    try {
+      const data = await api('/api/cabinet/acts/request', {
+        method: 'POST',
+        body: { companyId, month: actMonth },
+      })
+      setMessage(
+        data.created
+          ? `Акт за ${data.periodLabel} сформирован.`
+          : `Акт за ${data.periodLabel} уже сформирован — открываю.`,
+      )
+      setActPanelOpen(false)
+      // Показываем именно тот месяц, за который запросили акт.
+      const nextFrom = `${actMonth}-01`
+      const nextTo = monthEndIso(actMonth)
+      setFrom(nextFrom)
+      setTo(nextTo)
+      await load({ from: nextFrom, to: nextTo })
+      if (data.document?.id) {
+        await apiOpen(`/api/cabinet/documents/${data.document.id}/view`).catch(() => {})
+      }
+    } catch (err) {
+      setError(err.message || 'Не удалось запросить акт')
+    } finally {
+      setActBusy(false)
+    }
+  }
+
   return (
     <>
       <div className="cab-page-head">
         <div>
           <h1>Документы</h1>
-          <p>Счета, акты, детализация услуг. Просмотр на сайте, скачивание и отправка на email.</p>
+          <p>
+            Счета, акты, детализация услуг. Акт оказанных услуг формируется автоматически по
+            итогам месяца и отражает только списания с баланса. Акт за прошедший месяц можно
+            запросить отдельной кнопкой.
+          </p>
         </div>
-        <button type="button" className="cab-btn primary" disabled={busy} onClick={generateDetail}>
-          {busy ? 'Формирование…' : 'Сформировать детализацию'}
-        </button>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          <button
+            type="button"
+            className="cab-btn primary"
+            onClick={() => {
+              setError('')
+              setMessage('')
+              setActPanelOpen((open) => !open)
+            }}
+          >
+            Запросить акт за месяц
+          </button>
+          <button type="button" className="cab-btn ghost" disabled={busy} onClick={generateDetail}>
+            {busy ? 'Формирование…' : 'Сформировать детализацию'}
+          </button>
+        </div>
       </div>
+
+      {actPanelOpen ? (
+        <form className="cab-card ew-docs-period" onSubmit={requestAct}>
+          <div className="ew-docs-period-title">Запросить акт за месяц</div>
+          <div className="ew-docs-period-fields">
+            <label>
+              <span>Месяц</span>
+              <input
+                type="month"
+                className="cab-select"
+                value={actMonth}
+                max={previousMonthIso()}
+                onChange={(e) => setActMonth(e.target.value)}
+              />
+            </label>
+            <button type="submit" className="cab-btn primary" disabled={actBusy}>
+              {actBusy ? 'Формирую…' : 'Запросить акт'}
+            </button>
+            <button
+              type="button"
+              className="cab-btn ghost"
+              disabled={actBusy}
+              onClick={() => setActPanelOpen(false)}
+            >
+              Отмена
+            </button>
+          </div>
+          <p style={{ margin: '10px 0 0', color: '#9db8d4', fontSize: 13 }}>
+            Акт собирается только по фактическим списаниям с баланса за выбранный месяц. Если
+            списаний не было, акт не формируется.
+          </p>
+        </form>
+      ) : null}
 
       <form className="cab-card ew-docs-period" onSubmit={applyPeriod}>
         <div className="ew-docs-period-title">Период</div>

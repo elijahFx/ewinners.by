@@ -48,7 +48,8 @@ export default function InvoicesPage() {
           <h1>Счета на оплату</h1>
           <p>
             Плательщик: <strong style={{ color: '#8fd2ff' }}>{company?.name || 'не выбран'}</strong>
-            . После оплаты доступен акт с тем же номером.
+            . Счёт пополняет баланс. Акт оказанных услуг формируется автоматически по итогам
+            месяца и доступен в разделе «Документы».
           </p>
         </div>
       </div>
@@ -105,28 +106,6 @@ export default function InvoicesPage() {
                         <button type="button" className="cab-btn ghost" onClick={() => setEmailTarget(i)}>
                           Email
                         </button>
-                        {i.status === 'paid' && (
-                          <>
-                            <button
-                              type="button"
-                              className="cab-btn primary"
-                              onClick={() =>
-                                apiOpen(`/api/cabinet/invoices/${i.id}/act?mode=view`).catch((e) => alert(e.message))
-                              }
-                            >
-                              Акт
-                            </button>
-                            <button
-                              type="button"
-                              className="cab-btn ghost"
-                              onClick={() =>
-                                apiDownload(`/api/cabinet/invoices/${i.id}/act`, `act-${i.number}.pdf`)
-                              }
-                            >
-                              Скачать акт
-                            </button>
-                          </>
-                        )}
                       </div>
                     </td>
                   </tr>

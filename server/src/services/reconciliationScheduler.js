@@ -38,6 +38,9 @@ export async function runReconciliationCheck({ force = false } = {}) {
   const from = new Date(now.getTime() - LOOKBACK_DAYS * 24 * 60 * 60 * 1000).toISOString();
   const report = await buildReconciliationReport({ from });
 
+  const pending = report.pending?.length || 0;
+  const pendingAmount = Number(report.pendingAmount || 0);
+  const blockedCompanies = report.blockedCompanies?.length || 0;
   const result = {
     ok: true,
     from,
@@ -45,17 +48,21 @@ export async function runReconciliationCheck({ force = false } = {}) {
     charged: report.charged,
     missing: report.missing.length,
     missingAmount: report.missingAmount,
+    pending,
+    pendingAmount,
+    blockedCompanies,
     unmappedProjects: report.unmappedProjects,
   };
 
-  if (!report.missing.length) {
+  if (!report.missing.length && !pending && !blockedCompanies) {
     lastRunDate = today;
     console.log(`[сверка] расхождений нет: проверено ${report.ordersChecked} заказов`);
     return result;
   }
 
   console.error(
-    `[сверка] РАСХОЖДЕНИЯ: не списано ${report.missing.length} заказов на ${report.missingAmount} BYN`,
+    `[сверка] РАСХОЖДЕНИЯ: не списано ${report.missing.length} на ${report.missingAmount} BYN, ` +
+      `в пограничной зоне ${pending} на ${pendingAmount} BYN, остановлено клиентов ${blockedCompanies}`,
   );
 
   const rows = report.byCompany
@@ -71,6 +78,12 @@ export async function runReconciliationCheck({ force = false } = {}) {
     ? `<p style="color:#a33">Не привязаны проекты SalesRender: <b>${report.unmappedProjects.map(esc).join(', ')}</b> — по ним списание невозможно, пока не укажете клиента.</p>`
     : '';
 
+  const pendingLine = pending
+    ? `<p style="color:#a60">Пограничная зона: <b>${pending} заказов на ${pendingAmount.toFixed(2)} BYN</b> — ждут пополнения баланса.</p>`
+    : '';
+  const blockedLine = blockedCompanies
+    ? `<p style="color:#a33">Остановлено клиентов: <b>${blockedCompanies}</b> — проекты SalesRender архивированы или ожидают архивации.</p>`
+    : '';
   const html =
     `<p>Сверка заказов SalesRender со списаниями выявила расхождения.</p>` +
     `<p>Проверено заказов: <b>${report.ordersChecked}</b>, списано: <b>${report.charged}</b>, ` +
@@ -78,18 +91,24 @@ export async function runReconciliationCheck({ force = false } = {}) {
     `<table style="border-collapse:collapse;font:14px sans-serif"><tr>` +
     `<th style="padding:6px 10px;text-align:left">Клиент</th>` +
     `<th style="padding:6px 10px">Заказов</th><th style="padding:6px 10px">Сумма</th></tr>${rows}</table>` +
+    pendingLine +
+    blockedLine +
     unmapped +
-    `<p>Раздел «Сверка» в кабинете администратора: можно посмотреть детали и восстановить списания.</p>`;
+    `<p>Раздел «Сверка» в кабинете администратора: можно посмотреть детали, списать пограничную зону и восстановить потерянные списания.</p>`;
 
   const to = await adminEmails();
   if (to.length) {
     try {
       await sendEmail({
         to: to.join(', '),
-        subject: `E-Winners: не списано ${report.missing.length} заказов на ${report.missingAmount.toFixed(2)} BYN`,
+        subject:
+          `E-Winners: сверка — не списано ${report.missing.length} на ${report.missingAmount.toFixed(2)} BYN, ` +
+          `пограничная зона ${pending} на ${pendingAmount.toFixed(2)} BYN`,
         text:
           `Сверка заказов SalesRender выявила расхождения.\n` +
           `Проверено: ${report.ordersChecked}, списано: ${report.charged}, не списано: ${report.missing.length} на ${report.missingAmount.toFixed(2)} BYN.\n` +
+          `Пограничная зона: ${pending} заказов на ${pendingAmount.toFixed(2)} BYN.\n` +
+          `Остановлено клиентов: ${blockedCompanies}.\n` +
           report.byCompany.map((c) => `  ${c.companyName}: ${c.count} заказов, ${c.amount.toFixed(2)} BYN`).join('\n'),
         html,
       });

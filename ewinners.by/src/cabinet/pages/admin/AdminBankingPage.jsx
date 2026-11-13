@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { ArrowDownLeft, ArrowUpRight, Download, Landmark, RefreshCw } from 'lucide-react'
 import { api, apiDownload } from '../../api'
 import { DIRECTIONS, useDirection } from '../../DirectionContext'
@@ -89,9 +89,13 @@ export default function AdminBankingPage() {
   // Данные из MTBank приходят за несколько секунд, поэтому до первого ответа
   // показываем скелетон, а не нули.
   const [loaded, setLoaded] = useState(false)
-  // Какой счёт уже загружен: при смене направления показываем скелетон,
-  // чтобы не выводить данные старого счёта под новым заголовком.
-  const [loadedAccountIban, setLoadedAccountIban] = useState('')
+  // Для какого запроса (счёт + период + поиск) уже показан ответ. Пока новый
+  // запрос в пути, старые данные под новым фильтром не показываем.
+  const [loadedQuery, setLoadedQuery] = useState('')
+  // Номер последнего запроса: ответы старых запросов не должны перетирать
+  // данные нового счёта/периода. Иначе при быстром переключении направления
+  // на экране остаются поступления предыдущего счёта.
+  const requestRef = useRef(0)
   // Счёт, по которому банк ответил «не найден в согласии».
   const [unavailableIban, setUnavailableIban] = useState('')
   const [syncing, setSyncing] = useState(false)
@@ -152,6 +156,11 @@ export default function AdminBankingPage() {
   }, [filters.from, filters.to, debouncedQ, accountIban])
 
   async function load({ refresh = false } = {}) {
+    const requestId = ++requestRef.current;
+    const requestQuery = queryString;
+    const requestIban = accountIban;
+    const isCurrent = () => requestId === requestRef.current;
+
     setLoading(true)
     setError('')
 
@@ -159,10 +168,11 @@ export default function AdminBankingPage() {
     // но без выписки и с нулевыми оборотами. «Обновить» всё равно пробует
     // банк — вдруг счёт уже добавили в согласие.
     if (notConnected && !refresh) {
+      if (!isCurrent()) return
       setItems([])
       setSummary(EMPTY_SUMMARY)
       setAccount({
-        iban: accountIban,
+        iban: requestIban,
         name: directionAccount?.label || 'Расчётный счёт',
         currency: 'BYN',
         balance: null,
@@ -172,15 +182,16 @@ export default function AdminBankingPage() {
       setMessage('')
       setFetchedAt(null)
       setLoaded(true)
-      setLoadedAccountIban(accountIban)
+      setLoadedQuery(requestQuery)
       setLoading(false)
       return
     }
 
     try {
       const data = await api(
-        `/api/admin/banking/movements?${queryString}${refresh ? '&refresh=1' : ''}`,
+        `/api/admin/banking/movements?${requestQuery}${refresh ? '&refresh=1' : ''}`,
       )
+      if (!isCurrent()) return
       setItems(data.items || [])
       setSummary(data.summary || EMPTY_SUMMARY)
       setAccount(data.account || null)
@@ -188,18 +199,19 @@ export default function AdminBankingPage() {
       setMessage(data.message || '')
       setFetchedAt(data.fetchedAt || null)
       setLoaded(true)
-      setLoadedAccountIban(accountIban)
+      setLoadedQuery(requestQuery)
       setUnavailableIban('')
     } catch (err) {
+      if (!isCurrent()) return
       const text = err.message || ''
       if (/не найден в согласии/i.test(text)) {
         // Счёт направления просто не добавлен в согласие MTBank — это не
         // ошибка связи, показываем отдельное объяснение вместо красной плашки.
-        setUnavailableIban(accountIban)
+        setUnavailableIban(requestIban)
         setItems([])
         setSummary(EMPTY_SUMMARY)
         setAccount({
-          iban: accountIban,
+          iban: requestIban,
           name: directionAccount?.label || 'Расчётный счёт',
           currency: 'BYN',
           balance: null,
@@ -216,9 +228,9 @@ export default function AdminBankingPage() {
         setAccount(null)
       }
       setLoaded(true)
-      setLoadedAccountIban(accountIban)
+      setLoadedQuery(requestQuery)
     } finally {
-      setLoading(false)
+      if (isCurrent()) setLoading(false)
     }
   }
 
@@ -271,7 +283,7 @@ export default function AdminBankingPage() {
   const currency = account?.currency || 'BYN'
   // Скелетон показываем до первого ответа банка и при смене счёта. При
   // обновлении фильтров по тому же счёту старые данные остаются, без мерцания.
-  const showSkeleton = loading && (!loaded || loadedAccountIban !== accountIban)
+  const showSkeleton = loading && (!loaded || loadedQuery !== queryString)
   const emptyLabel = notConnected
     ? 'Счёт не подключён к MTBank'
     : !configured

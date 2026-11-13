@@ -1,5 +1,6 @@
 import { query, withTransaction } from '../db.js';
 import { applyBalanceChange, audit, notifyCompanyUsers } from './billing.js';
+import { afterBalanceChange } from './financialState.js';
 
 /**
  * Mark invoice paid, credit company balance, update document status.
@@ -65,32 +66,16 @@ export async function markInvoicePaid({
     return applied;
   });
 
+  // После коммита: разбираем пограничную зону и пересчитываем блокировку.
+  await afterBalanceChange(companyId, { credit: true });
+
   if (!skipNotify) {
     await notifyCompanyUsers(
       companyId,
       'Счёт оплачен',
-      `Счёт ${invoice.number} оплачен. На баланс зачислено ${payAmount.toFixed(2)} BYN.`,
+      `Счёт ${invoice.number} оплачен. На баланс зачислено ${payAmount.toFixed(2)} BYN. ` +
+        'Акт оказанных услуг будет сформирован автоматически по итогам месяца.',
     );
-  }
-
-  try {
-    const companyRows = await query('SELECT * FROM companies WHERE id = :id LIMIT 1', {
-      id: companyId,
-    });
-    const invRows = await query('SELECT * FROM invoices WHERE id = :id LIMIT 1', { id: invoiceId });
-    if (invRows[0] && companyRows[0]) {
-      const { ensureActForInvoice } = await import('./documents.js');
-      await ensureActForInvoice(invRows[0], companyRows[0]);
-      if (!skipNotify) {
-        await notifyCompanyUsers(
-          companyId,
-          'Акт оказанных услуг',
-          `Сформирован акт ${invoice.number}. Документ доступен в разделе «Документы».`,
-        );
-      }
-    }
-  } catch (err) {
-    console.warn('Act generation failed:', err.message);
   }
 
   if (createdBy) {

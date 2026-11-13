@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useParams } from 'react-router-dom'
-import { api, apiOpen } from '../../api'
+import { MoreHorizontal } from 'lucide-react'
+import { api, apiDownload, apiOpen } from '../../api'
+import { useAuth } from '../../AuthContext'
 import SearchSelect from '../../ui/SearchSelect'
 import useLiveBalance from '../../useLiveBalance'
 
@@ -8,6 +10,16 @@ const DIRECTIONS = {
   hr: 'HR',
   digital: 'Digital',
   kc: 'КЦ',
+}
+
+const INVOICE_STATUS = {
+  created: 'Создан',
+  awaiting_payment: 'Ожидает оплаты',
+  partially_paid: 'Частично оплачен',
+  paid: 'Оплачен',
+  overdue: 'Просрочен',
+  cancelled: 'Отменён',
+  needs_review: 'Проверить',
 }
 
 const fieldClass =
@@ -45,24 +57,53 @@ function formatDate(value) {
   return Number.isNaN(d.getTime()) ? value : d.toLocaleDateString('ru-RU')
 }
 
+function formatDateTime(value) {
+  if (!value) return '—'
+  const d = new Date(value)
+  return Number.isNaN(d.getTime())
+    ? value
+    : d.toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' })
+}
+
 /**
  * Рабочее место направления: HR, Digital или КЦ.
  *
- * Одна страница на всё: список клиентов, форма создания клиента и генератор
- * счёта или акта. Пометка, которую вводит сотрудник, попадает в назначение
- * платежа счёта и в текст акта.
+ * Одна страница на всё: форма создания клиента, генератор счёта
+ * и список счетов направления. Пометка, которую вводит сотрудник,
+ * попадает в назначение платежа счёта. Акты формируются автоматически
+ * по итогам месяца и отражают только списания с баланса.
  */
 export default function AdminDirectionPage() {
   const { code } = useParams()
+  const { user } = useAuth()
   const direction = DIRECTIONS[code] ? code : 'hr'
   const label = DIRECTIONS[direction]
+  const canMarkPaid = ['admin', 'accountant'].includes(user?.role)
+  const isAdmin = user?.role === 'admin'
 
   const [companies, setCompanies] = useState([])
-  const [search, setSearch] = useState('')
-  const [loading, setLoading] = useState(true)
+  const [invoices, setInvoices] = useState([])
+  const [invoicesLoading, setInvoicesLoading] = useState(true)
+  const [invoiceBusy, setInvoiceBusy] = useState(null)
+  const [deletingInvoice, setDeletingInvoice] = useState(null)
+  const [invoiceMenu, setInvoiceMenu] = useState(null)
   const [error, setError] = useState('')
   const [message, setMessage] = useState('')
   const [busy, setBusy] = useState(false)
+  const [unpStatus, setUnpStatus] = useState('')
+  const [ibanStatus, setIbanStatus] = useState('')
+  const [lookingUnp, setLookingUnp] = useState(false)
+  const [oneoff, setOneoff] = useState({
+    name: '',
+    unp: '',
+    bic: '',
+    iban: '',
+    bankName: '',
+    legalAddress: '',
+  })
+  const [oneoffUnpStatus, setOneoffUnpStatus] = useState('')
+  const [oneoffIbanStatus, setOneoffIbanStatus] = useState('')
+  const [lookingOneoffUnp, setLookingOneoffUnp] = useState(false)
 
   // форма нового клиента
   const [form, setForm] = useState({
@@ -75,7 +116,7 @@ export default function AdminDirectionPage() {
   })
 
   // генератор документов
-  const [gen, setGen] = useState({ companyId: '', kind: 'invoice', amount: '', note: '' })
+  const [gen, setGen] = useState({ companyId: '', amount: '', note: '' })
   const [accounts, setAccounts] = useState([])
   const [accountIban, setAccountIban] = useState('')
 
@@ -90,23 +131,162 @@ export default function AdminDirectionPage() {
   async function loadCompanies(q = '') {
     try {
       setError('')
-      const data = await api(
-        `/api/direction/companies${q ? `?q=${encodeURIComponent(q)}` : ''}`,
-      )
+      const params = new URLSearchParams({ direction })
+      if (q) params.set('q', q)
+      const data = await api(`/api/direction/companies?${params.toString()}`)
       setCompanies(data.items || [])
     } catch (err) {
       setError(err.message)
-    } finally {
-      setLoading(false)
     }
   }
 
+  const loadInvoices = useCallback(async () => {
+    setInvoicesLoading(true)
+    try {
+      const data = await api(`/api/direction/invoices?direction=${encodeURIComponent(direction)}`)
+      setInvoices(data.items || [])
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setInvoicesLoading(false)
+    }
+  }, [direction])
+
   useEffect(() => {
-    setLoading(true)
     setMessage('')
     setError('')
+    // У другого направления свои клиенты — выбранного в форме сбрасываем.
+    setGen((prev) => ({ ...prev, companyId: '' }))
     loadCompanies()
-  }, [direction])
+    loadInvoices()
+  }, [direction, loadInvoices])
+
+  // УНП → название и юридический адрес из ЕГР.
+  useEffect(() => {
+    const unp = String(form.unp || '').replace(/\D/g, '')
+    if (unp.length !== 9) {
+      setUnpStatus(unp.length ? 'УНП: 9 цифр' : '')
+      return
+    }
+
+    const t = setTimeout(async () => {
+      setLookingUnp(true)
+      setUnpStatus('Поиск в реестре…')
+      try {
+        const data = await api(`/api/lookup/unp/${unp}`)
+        setForm((prev) => ({
+          ...prev,
+          unp: data.unp,
+          name: data.name || prev.name,
+          legalAddress: data.address || prev.legalAddress,
+        }))
+        setUnpStatus(
+          data.status
+            ? `Найдено: ${data.shortName || data.name} (${data.status})`
+            : `Найдено: ${data.shortName || data.name}`,
+        )
+      } catch (err) {
+        setUnpStatus(err.message || 'Не найдено')
+      } finally {
+        setLookingUnp(false)
+      }
+    }, 450)
+
+    return () => clearTimeout(t)
+  }, [form.unp])
+
+  // IBAN → банк и БИК.
+  useEffect(() => {
+    const iban = String(form.iban || '').replace(/\s+/g, '')
+    if (iban.replace(/[^A-Za-z0-9]/g, '').length < 8) {
+      setIbanStatus('')
+      return
+    }
+
+    const t = setTimeout(async () => {
+      try {
+        const data = await api(`/api/lookup/iban?iban=${encodeURIComponent(iban)}`)
+        if (data.bankName || data.bic) {
+          setForm((prev) => ({
+            ...prev,
+            bankName: data.bankName || prev.bankName,
+            bic: data.bic || prev.bic,
+            iban: data.iban || prev.iban,
+          }))
+        }
+        setIbanStatus(
+          data.bankName
+            ? `${data.bankName} · ${data.bic}`
+            : data.message || (data.bic ? `БИК: ${data.bic}` : ''),
+        )
+      } catch (err) {
+        setIbanStatus(err.message || 'Не удалось определить банк')
+      }
+    }, 350)
+
+    return () => clearTimeout(t)
+  }, [form.iban])
+
+  // Те же подсказки для разового клиента в правой форме.
+  useEffect(() => {
+    const unp = String(oneoff.unp || '').replace(/\D/g, '')
+    if (unp.length !== 9) {
+      setOneoffUnpStatus(unp.length ? 'УНП: 9 цифр' : '')
+      return
+    }
+    const t = setTimeout(async () => {
+      setLookingOneoffUnp(true)
+      setOneoffUnpStatus('Поиск в реестре…')
+      try {
+        const data = await api(`/api/lookup/unp/${unp}`)
+        setOneoff((prev) => ({
+          ...prev,
+          unp: data.unp,
+          name: data.name || prev.name,
+          legalAddress: data.address || prev.legalAddress,
+        }))
+        setOneoffUnpStatus(
+          data.status
+            ? `Найдено: ${data.shortName || data.name} (${data.status})`
+            : `Найдено: ${data.shortName || data.name}`,
+        )
+      } catch (err) {
+        setOneoffUnpStatus(err.message || 'Не найдено')
+      } finally {
+        setLookingOneoffUnp(false)
+      }
+    }, 450)
+    return () => clearTimeout(t)
+  }, [oneoff.unp])
+
+  useEffect(() => {
+    const iban = String(oneoff.iban || '').replace(/\s+/g, '')
+    if (iban.replace(/[^A-Za-z0-9]/g, '').length < 8) {
+      setOneoffIbanStatus('')
+      return
+    }
+    const t = setTimeout(async () => {
+      try {
+        const data = await api(`/api/lookup/iban?iban=${encodeURIComponent(iban)}`)
+        if (data.bankName || data.bic) {
+          setOneoff((prev) => ({
+            ...prev,
+            bankName: data.bankName || prev.bankName,
+            bic: data.bic || prev.bic,
+            iban: data.iban || prev.iban,
+          }))
+        }
+        setOneoffIbanStatus(
+          data.bankName
+            ? `${data.bankName} · ${data.bic}`
+            : data.message || (data.bic ? `БИК: ${data.bic}` : ''),
+        )
+      } catch (err) {
+        setOneoffIbanStatus(err.message || 'Не удалось определить банк')
+      }
+    }, 350)
+    return () => clearTimeout(t)
+  }, [oneoff.iban])
 
   // Счета направлений: у HR, Digital и КЦ они разные. Список от направления
   // не зависит, поэтому запрашиваем его один раз.
@@ -163,17 +343,10 @@ export default function AdminDirectionPage() {
   }, [loadBank])
 
   useLiveBalance(() => {
-    loadCompanies(search)
+    loadCompanies()
     loadAccounts()
+    loadInvoices()
   })
-
-  const filtered = useMemo(() => {
-    const needle = search.trim().toLowerCase()
-    if (!needle) return companies
-    return companies.filter((c) =>
-      `${c.name} ${c.unp || ''} ${c.iban || ''}`.toLowerCase().includes(needle),
-    )
-  }, [companies, search])
 
   // Банковские счета из MTBank, разложенные по IBAN: по ним карточки счетов
   // показывают остаток и обороты, не дожидаясь нового запроса.
@@ -214,7 +387,9 @@ export default function AdminDirectionPage() {
       })
       setMessage(`Клиент «${form.name}» добавлен в ${label}`)
       setForm({ name: '', unp: '', legalAddress: '', bankName: '', iban: '', bic: '' })
-      await loadCompanies(search)
+      setUnpStatus('')
+      setIbanStatus('')
+      await loadCompanies()
     } catch (err) {
       setError(err.message)
     } finally {
@@ -224,6 +399,22 @@ export default function AdminDirectionPage() {
 
   async function generateDocument(e) {
     e.preventDefault()
+    const oneoffData = {
+      name: oneoff.name.trim(),
+      unp: oneoff.unp.trim(),
+      bic: oneoff.bic.trim(),
+      iban: oneoff.iban.trim(),
+      bankName: oneoff.bankName.trim(),
+      legalAddress: oneoff.legalAddress.trim(),
+    }
+    if (!gen.companyId && !oneoffData.name) {
+      setError('Выберите клиента из списка или заполните название разового клиента')
+      return
+    }
+    if (!gen.companyId && !oneoffData.unp) {
+      setError('Для разового клиента укажите УНП')
+      return
+    }
     setBusy(true)
     setError('')
     setMessage('')
@@ -231,18 +422,17 @@ export default function AdminDirectionPage() {
       const data = await api('/api/direction/documents', {
         method: 'POST',
         body: {
-          companyId: Number(gen.companyId),
-          kind: gen.kind,
+          companyId: gen.companyId ? Number(gen.companyId) : undefined,
+          oneoff: gen.companyId ? undefined : oneoffData,
           amount: gen.amount ? Number(gen.amount) : undefined,
           note: gen.note,
           direction,
           iban: accountIban || undefined,
         },
       })
-      const kindLabel = data.kind === 'act' ? 'Акт' : 'Счёт'
-      setMessage(`${kindLabel} ${data.document?.number || ''} сформирован`)
+      setMessage(`Счёт ${data.document?.number || ''} сформирован`)
       // Новый счёт меняет цифры на карточках направлений.
-      await loadAccounts()
+      await Promise.all([loadAccounts(), loadInvoices()])
       if (data.document?.id) {
         try {
           await apiOpen(`/api/direction/documents/${data.document.id}/view`)
@@ -257,12 +447,90 @@ export default function AdminDirectionPage() {
     }
   }
 
+  async function openInvoiceDocument(invoice, documentId, download = false) {
+    if (!documentId) return
+    try {
+      if (download) {
+        await apiDownload(`/api/direction/documents/${documentId}/download`, `${invoice.number}.pdf`)
+      } else {
+        await apiOpen(`/api/direction/documents/${documentId}/view`)
+      }
+    } catch (err) {
+      setError(err.message)
+    }
+  }
+
+  async function markInvoicePaid(invoice) {
+    const ok = window.confirm(
+      `Отметить счёт ${invoice.number} оплаченным и зачислить ${money(invoice.amount)} на баланс «${invoice.company_name}»?`,
+    )
+    if (!ok) return
+    setInvoiceBusy(invoice.id)
+    setError('')
+    setMessage('')
+    try {
+      await api(`/api/admin/invoices/${invoice.id}/mark-paid`, { method: 'POST', body: {} })
+      await Promise.all([loadInvoices(), loadAccounts(), loadCompanies()])
+      setMessage(`Счёт ${invoice.number} оплачен. Акт будет сформирован по итогам месяца`)
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setInvoiceBusy(null)
+    }
+  }
+
+  function openInvoiceMenu(event, invoice) {
+    const rect = event.currentTarget.getBoundingClientRect()
+    setInvoiceMenu({
+      invoice,
+      top: rect.bottom + 8,
+      right: Math.max(12, window.innerWidth - rect.right),
+    })
+  }
+
+  async function deleteInvoice(invoice) {
+    if (!isAdmin || !invoice) return
+    const paid =
+      ['paid', 'partially_paid'].includes(invoice.status) ||
+      Number(invoice.paid_amount || 0) > 0 ||
+      Boolean(invoice.paid_at)
+    const paidNote = paid
+      ? '\n\nСчёт оплачен. Если оплата подтверждена вручную, зачисление на баланс будет отменено.'
+      : ''
+    if (
+      !window.confirm(
+        `Удалить счёт ${invoice.number}?${paidNote}\n\nPDF счёта также будет удалён. Действие необратимо.`,
+      )
+    ) {
+      return
+    }
+    setInvoiceMenu(null)
+    setDeletingInvoice(invoice.id)
+    setError('')
+    setMessage('')
+    try {
+      const data = await api(`/api/admin/invoices/${invoice.id}`, { method: 'DELETE' })
+      const reversed = Number(data.balanceReversed || 0)
+      setMessage(
+        reversed > 0
+          ? `Счёт ${invoice.number} удалён, зачисление отменено на ${money(reversed)}`
+          : `Счёт ${invoice.number} удалён`,
+      )
+      await Promise.all([loadInvoices(), loadAccounts(), loadCompanies()])
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setDeletingInvoice(null)
+    }
+  }
+
   return (
     <div className="space-y-5 text-[#f3f8ff]">
       <div>
         <h1 className="m-0 text-[28px] font-bold leading-tight text-white">Направление {label}</h1>
         <p className="mt-1 text-sm text-[#9db8d4]">
-          Клиенты направления, добавление новых и генерация счетов и актов.
+          Счета направления, добавление клиентов и генерация счетов. Акты формируются
+          автоматически по итогам месяца и доступны в разделе «Документы».
         </p>
       </div>
 
@@ -293,7 +561,7 @@ export default function AdminDirectionPage() {
               className={fieldClass}
               value={form.name}
               onChange={(e) => setForm((p) => ({ ...p, name: e.target.value }))}
-              placeholder="ООО «Пример»"
+              placeholder="Заполнится по УНП"
             />
           </label>
           <div className="grid gap-3 sm:grid-cols-2">
@@ -302,9 +570,18 @@ export default function AdminDirectionPage() {
               <input
                 className={fieldClass}
                 value={form.unp}
-                onChange={(e) => setForm((p) => ({ ...p, unp: e.target.value }))}
+                onChange={(e) =>
+                  setForm((p) => ({ ...p, unp: e.target.value.replace(/\D/g, '').slice(0, 9) }))
+                }
+                inputMode="numeric"
+                maxLength={9}
                 placeholder="190000000"
               />
+              {unpStatus ? (
+                <span className="mt-1 block text-[11px] font-medium normal-case text-[#9db8d4]">
+                  {lookingUnp ? 'Поиск…' : unpStatus}
+                </span>
+              ) : null}
             </label>
             <label className="block text-xs font-bold uppercase tracking-wide text-[#9db8d4]">
               БИК
@@ -312,7 +589,7 @@ export default function AdminDirectionPage() {
                 className={fieldClass}
                 value={form.bic}
                 onChange={(e) => setForm((p) => ({ ...p, bic: e.target.value }))}
-                placeholder="ALFABY2X"
+                placeholder="Определится по счёту"
               />
             </label>
           </div>
@@ -321,9 +598,14 @@ export default function AdminDirectionPage() {
             <input
               className={fieldClass}
               value={form.iban}
-              onChange={(e) => setForm((p) => ({ ...p, iban: e.target.value }))}
+              onChange={(e) => setForm((p) => ({ ...p, iban: e.target.value.toUpperCase() }))}
               placeholder="BY00 XXXX 0000 0000 0000 0000 0000"
             />
+            {ibanStatus ? (
+              <span className="mt-1 block text-[11px] font-medium normal-case text-[#9db8d4]">
+                {ibanStatus}
+              </span>
+            ) : null}
           </label>
           <label className="mt-3 block text-xs font-bold uppercase tracking-wide text-[#9db8d4]">
             Банк
@@ -331,7 +613,7 @@ export default function AdminDirectionPage() {
               className={fieldClass}
               value={form.bankName}
               onChange={(e) => setForm((p) => ({ ...p, bankName: e.target.value }))}
-              placeholder="ОАО «АСБ Беларусбанк»"
+              placeholder="Определится по IBAN"
             />
           </label>
           <label className="mt-3 block text-xs font-bold uppercase tracking-wide text-[#9db8d4]">
@@ -340,7 +622,7 @@ export default function AdminDirectionPage() {
               className={fieldClass}
               value={form.legalAddress}
               onChange={(e) => setForm((p) => ({ ...p, legalAddress: e.target.value }))}
-              placeholder="г. Минск, ул. …"
+              placeholder="Подтянется из ЕГР"
             />
           </label>
 
@@ -348,7 +630,7 @@ export default function AdminDirectionPage() {
             type="submit"
             className="cab-btn primary mt-4 w-full"
             style={{ minHeight: 40 }}
-            disabled={busy}
+            disabled={busy || lookingUnp}
           >
             {busy ? 'Сохраняю…' : 'Добавить клиента'}
           </button>
@@ -359,9 +641,9 @@ export default function AdminDirectionPage() {
           onSubmit={generateDocument}
           className="rounded-2xl border border-white/[0.06] bg-[#0b1f3a] p-4 sm:p-5"
         >
-          <h2 className="m-0 text-base font-bold text-white">Счёт или акт</h2>
+          <h2 className="m-0 text-base font-bold text-white">Счёт на оплату</h2>
           <p className="mt-1 text-xs text-[#9db8d4]">
-            Пометка попадёт в счёт и в акт — например, «Оплата по счету № 12 от 01.10.2026».
+            Пометка попадёт в счёт — например, «Оплата по счету № 12 от 01.10.2026».
           </p>
 
           <label className="mt-3 block text-xs font-bold uppercase tracking-wide text-[#9db8d4]">
@@ -379,18 +661,92 @@ export default function AdminDirectionPage() {
             </div>
           </label>
 
-          <div className="grid gap-3 sm:grid-cols-2">
-            <label className="block text-xs font-bold uppercase tracking-wide text-[#9db8d4]">
-              Документ
-              <select
+          <div className="mt-3 rounded-xl border border-dashed border-white/15 bg-white/[0.02] p-3">
+            <div className="text-xs font-bold uppercase tracking-wide text-[#8fd2ff]">
+              Или разовый клиент
+            </div>
+            <p className="mt-1 text-[11px] leading-snug text-[#9db8d4]">
+              Не добавляется в список клиентов. Данные попадут в счёт. Если выбран клиент
+              из списка выше, эти поля не используются.
+            </p>
+            <label className="mt-2 block text-xs font-bold uppercase tracking-wide text-[#9db8d4]">
+              Название
+              <input
                 className={fieldClass}
-                value={gen.kind}
-                onChange={(e) => setGen((p) => ({ ...p, kind: e.target.value }))}
-              >
-                <option value="invoice">Счёт</option>
-                <option value="act">Акт</option>
-              </select>
+                value={oneoff.name}
+                onChange={(e) => setOneoff((p) => ({ ...p, name: e.target.value }))}
+                placeholder="Заполнится по УНП"
+              />
             </label>
+            <div className="mt-2 grid gap-2 sm:grid-cols-2">
+              <label className="block text-xs font-bold uppercase tracking-wide text-[#9db8d4]">
+                УНП
+                <input
+                  className={fieldClass}
+                  value={oneoff.unp}
+                  onChange={(e) =>
+                    setOneoff((p) => ({
+                      ...p,
+                      unp: e.target.value.replace(/\D/g, '').slice(0, 9),
+                    }))
+                  }
+                  inputMode="numeric"
+                  maxLength={9}
+                  placeholder="190000000"
+                />
+                {oneoffUnpStatus ? (
+                  <span className="mt-1 block text-[11px] font-medium normal-case text-[#9db8d4]">
+                    {lookingOneoffUnp ? 'Поиск…' : oneoffUnpStatus}
+                  </span>
+                ) : null}
+              </label>
+              <label className="block text-xs font-bold uppercase tracking-wide text-[#9db8d4]">
+                БИК
+                <input
+                  className={fieldClass}
+                  value={oneoff.bic}
+                  onChange={(e) => setOneoff((p) => ({ ...p, bic: e.target.value }))}
+                  placeholder="Определится по счёту"
+                />
+              </label>
+            </div>
+            <label className="mt-2 block text-xs font-bold uppercase tracking-wide text-[#9db8d4]">
+              IBAN
+              <input
+                className={fieldClass}
+                value={oneoff.iban}
+                onChange={(e) =>
+                  setOneoff((p) => ({ ...p, iban: e.target.value.toUpperCase() }))
+                }
+                placeholder="BY00 XXXX 0000 0000 0000 0000 0000"
+              />
+              {oneoffIbanStatus ? (
+                <span className="mt-1 block text-[11px] font-medium normal-case text-[#9db8d4]">
+                  {oneoffIbanStatus}
+                </span>
+              ) : null}
+            </label>
+            <label className="mt-2 block text-xs font-bold uppercase tracking-wide text-[#9db8d4]">
+              Банк
+              <input
+                className={fieldClass}
+                value={oneoff.bankName}
+                onChange={(e) => setOneoff((p) => ({ ...p, bankName: e.target.value }))}
+                placeholder="Определится по IBAN"
+              />
+            </label>
+            <label className="mt-2 block text-xs font-bold uppercase tracking-wide text-[#9db8d4]">
+              Юридический адрес
+              <input
+                className={fieldClass}
+                value={oneoff.legalAddress}
+                onChange={(e) => setOneoff((p) => ({ ...p, legalAddress: e.target.value }))}
+                placeholder="Подтянется из ЕГР"
+              />
+            </label>
+          </div>
+
+          <div className="grid gap-3 sm:grid-cols-2">
             <label className="block text-xs font-bold uppercase tracking-wide text-[#9db8d4]">
               Сумма, BYN
               <input
@@ -400,7 +756,7 @@ export default function AdminDirectionPage() {
                 className={fieldClass}
                 value={gen.amount}
                 onChange={(e) => setGen((p) => ({ ...p, amount: e.target.value }))}
-                placeholder={gen.kind === 'act' ? 'Если счёта ещё нет' : '0.00'}
+                placeholder="0.00"
               />
             </label>
           </div>
@@ -430,7 +786,7 @@ export default function AdminDirectionPage() {
               ))}
             </select>
             <span className="mt-1 block text-[11px] font-normal normal-case tracking-normal text-[#6f8bab]">
-              Попадает в счёт и акт. При смене направления счёт переключается на {label} автоматически.
+              Попадает в счёт. При смене направления счёт переключается на {label} автоматически.
             </span>
           </label>
 
@@ -438,9 +794,13 @@ export default function AdminDirectionPage() {
             type="submit"
             className="cab-btn primary mt-4 w-full"
             style={{ minHeight: 40 }}
-            disabled={busy || !gen.companyId}
+            disabled={
+              busy ||
+              lookingOneoffUnp ||
+              (!gen.companyId && (!oneoff.name.trim() || !oneoff.unp.trim()))
+            }
           >
-            {busy ? 'Формирую…' : `Сформировать ${gen.kind === 'act' ? 'акт' : 'счёт'}`}
+            {busy ? 'Формирую…' : 'Сформировать счёт'}
           </button>
         </form>
       </div>
@@ -667,58 +1027,123 @@ export default function AdminDirectionPage() {
         </div>
       </div>
 
-      {/* Список клиентов */}
+      {/* Счета направления: сформировали счёт — он здесь, как в разделе «Счета» */}
       <div className="rounded-2xl border border-white/[0.06] bg-[#0b1f3a] p-4 sm:p-5">
         <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
-          <h2 className="m-0 text-base font-bold text-white">Клиенты направления {label}</h2>
-          <input
-            className={fieldClass}
-            style={{ maxWidth: 320 }}
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="Поиск по названию, УНП или IBAN"
-          />
+          <div>
+            <h2 className="m-0 text-base font-bold text-white">Счета направления {label}</h2>
+            <p className="mt-1 text-xs text-[#9db8d4]">
+              Счёт появляется здесь сразу после формирования. Акт оказанных услуг формируется
+              автоматически по итогам месяца и доступен в разделе «Документы».
+            </p>
+          </div>
+          <button
+            type="button"
+            className="rounded-full border border-[#2a5f8f] bg-transparent px-4 py-2 text-xs font-bold text-[#cfe6ff] hover:bg-white/5 disabled:opacity-50"
+            onClick={() => loadInvoices()}
+            disabled={invoicesLoading}
+          >
+            {invoicesLoading ? 'Обновляю…' : 'Обновить'}
+          </button>
         </div>
+
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[720px] border-collapse text-left text-sm">
+          <table className="w-full min-w-[900px] border-collapse text-left text-sm">
             <thead className="bg-[#071529] text-xs uppercase tracking-wide text-[#9db8d4]">
               <tr>
-                <th className="px-3 py-3 font-bold">Клиент</th>
-                <th className="px-3 py-3 font-bold">УНП</th>
-                <th className="px-3 py-3 font-bold">IBAN</th>
-                <th className="px-3 py-3 font-bold">Баланс</th>
-                <th className="px-3 py-3 font-bold" />
+                <th className="px-3 py-3 font-bold">Номер</th>
+                <th className="px-3 py-3 font-bold">Дата</th>
+                <th className="px-3 py-3 font-bold">Организация</th>
+                <th className="px-3 py-3 font-bold">Сумма</th>
+                <th className="px-3 py-3 font-bold">Статус</th>
+                <th className="px-3 py-3 font-bold">Действия</th>
               </tr>
             </thead>
             <tbody>
-              {loading ? (
+              {invoicesLoading ? (
                 <tr>
-                  <td colSpan={5} className="px-3 py-8 text-center text-[#9db8d4]">
+                  <td colSpan={6} className="px-3 py-8 text-center text-[#9db8d4]">
                     Загрузка…
                   </td>
                 </tr>
-              ) : filtered.length === 0 ? (
+              ) : invoices.length === 0 ? (
                 <tr>
-                  <td colSpan={5} className="px-3 py-8 text-center text-[#9db8d4]">
-                    Клиентов пока нет
+                  <td colSpan={6} className="px-3 py-8 text-center text-[#9db8d4]">
+                    Счетов направления {label} пока нет
                   </td>
                 </tr>
               ) : (
-                filtered.map((c) => (
-                  <tr key={c.id} className="border-t border-white/[0.06]">
-                    <td className="px-3 py-3 text-[#cfe6ff]">{c.name}</td>
-                    <td className="px-3 py-3 text-[#9db8d4]">{c.unp || '—'}</td>
-                    <td className="px-3 py-3 text-[#9db8d4]">{c.iban || '—'}</td>
-                    <td className="px-3 py-3 font-semibold text-[#8fd2ff]">{money(c.balance)}</td>
-                    <td className="px-3 py-3 text-right">
-                      <button
-                        type="button"
-                        className="cab-btn ghost"
-                        style={{ minHeight: 30, padding: '0 12px', fontSize: '0.78rem' }}
-                        onClick={() => setGen((p) => ({ ...p, companyId: String(c.id) }))}
+                invoices.map((invoice) => (
+                  <tr key={invoice.id} className="border-t border-white/[0.06]">
+                    <td className="whitespace-nowrap px-3 py-3 font-mono text-xs text-[#cfe6ff]">
+                      {invoice.number}
+                    </td>
+                    <td className="whitespace-nowrap px-3 py-3 text-xs text-[#9db8d4]">
+                      {formatDateTime(invoice.created_at)}
+                    </td>
+                    <td className="px-3 py-3">
+                      <div className="font-medium text-white">{invoice.company_name}</div>
+                      <div className="text-xs text-[#9db8d4]">
+                        УНП {invoice.company_unp || '—'}
+                      </div>
+                    </td>
+                    <td className="whitespace-nowrap px-3 py-3 font-semibold text-[#8fd2ff]">
+                      {money(invoice.amount)}
+                    </td>
+                    <td className="px-3 py-3">
+                      <span
+                        className={`inline-flex rounded-md px-2 py-0.5 text-[11px] font-bold ${
+                          invoice.status === 'paid'
+                            ? 'bg-[#7dffc2]/15 text-[#7dffc2]'
+                            : invoice.status === 'cancelled'
+                              ? 'bg-white/10 text-[#9db8d4]'
+                              : 'bg-[#ffcf70]/15 text-[#ffe4b0]'
+                        }`}
                       >
-                        В документ
-                      </button>
+                        {INVOICE_STATUS[invoice.status] || invoice.status}
+                      </span>
+                    </td>
+                    <td className="px-3 py-3">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <button
+                          type="button"
+                          disabled={!invoice.invoice_document_id}
+                          onClick={() => openInvoiceDocument(invoice, invoice.invoice_document_id)}
+                          className="rounded-full border border-[#2a5f8f] bg-transparent px-3 py-1.5 text-xs font-bold text-[#cfe6ff] hover:bg-white/5 disabled:opacity-40"
+                        >
+                          Смотреть
+                        </button>
+                        <button
+                          type="button"
+                          disabled={!invoice.invoice_document_id}
+                          onClick={() => openInvoiceDocument(invoice, invoice.invoice_document_id, true)}
+                          className="rounded-full border border-[#2a5f8f] bg-transparent px-3 py-1.5 text-xs font-bold text-[#cfe6ff] hover:bg-white/5 disabled:opacity-40"
+                        >
+                          Скачать
+                        </button>
+                        {canMarkPaid && invoice.status !== 'paid' && invoice.status !== 'cancelled' ? (
+                          <button
+                            type="button"
+                            disabled={invoiceBusy === invoice.id}
+                            onClick={() => markInvoicePaid(invoice)}
+                            className="rounded-full border border-[#2f8f5b] bg-[#123a26] px-3 py-1.5 text-xs font-bold text-[#b7f7cf] hover:bg-[#174b31] disabled:opacity-50"
+                          >
+                            {invoiceBusy === invoice.id ? 'Зачисляю…' : 'Оплачен'}
+                          </button>
+                        ) : null}
+                        {isAdmin ? (
+                          <button
+                            type="button"
+                            aria-label="Ещё"
+                            title="Ещё"
+                            disabled={deletingInvoice === invoice.id}
+                            onClick={(event) => openInvoiceMenu(event, invoice)}
+                            className="inline-flex h-8 w-8 items-center justify-center rounded-full border border-[#2a5f8f] bg-transparent text-[#cfe6ff] hover:bg-white/5 disabled:opacity-40"
+                          >
+                            <MoreHorizontal className="size-4" />
+                          </button>
+                        ) : null}
+                      </div>
                     </td>
                   </tr>
                 ))
@@ -726,10 +1151,29 @@ export default function AdminDirectionPage() {
             </tbody>
           </table>
         </div>
-        <div className="mt-3 text-xs text-[#9db8d4]">
-          Показано {filtered.length} из {companies.length} · {localDate(new Date())}
-        </div>
       </div>
+
+      {invoiceMenu ? (
+        <>
+          <div
+            className="fixed inset-0 z-[90] bg-black/10"
+            onClick={() => setInvoiceMenu(null)}
+          />
+          <div
+            className="fixed z-[100] min-w-[190px] rounded-xl border border-[#2a5f8f] bg-[#0b1f3a] p-1 shadow-2xl"
+            style={{ top: invoiceMenu.top, right: invoiceMenu.right }}
+          >
+            <button
+              type="button"
+              disabled={deletingInvoice === invoiceMenu.invoice.id}
+              onClick={() => deleteInvoice(invoiceMenu.invoice)}
+              className="w-full rounded-lg px-3 py-2 text-left text-sm font-bold text-[#ff9b9b] hover:bg-red-500/10 disabled:opacity-50"
+            >
+              {deletingInvoice === invoiceMenu.invoice.id ? 'Удаление…' : 'Удалить счёт'}
+            </button>
+          </div>
+        </>
+      ) : null}
     </div>
   )
 }

@@ -16,6 +16,7 @@ const empty = {
   lowBalanceAction: 'allow_credit',
   buyoutEnabled: false,
   status: 'active',
+  direction: 'kc',
   managerName: '',
   managerPhone: '',
   managerEmail: '',
@@ -37,6 +38,7 @@ function toForm(company) {
     lowBalanceAction: company.low_balance_action || 'allow_credit',
     buyoutEnabled: Number(company.buyout_enabled) === 1,
     status: company.status || 'active',
+    direction: company.direction || 'kc',
     managerName: company.manager_name || '',
     managerPhone: company.manager_phone || '',
     managerEmail: company.manager_email || '',
@@ -58,9 +60,10 @@ const sectionStyle = {
 }
 
 /** Модальное окно редактирования клиента. */
-export default function EditCompanyModal({ company, onClose, onSaved }) {
+export default function EditCompanyModal({ company, onClose, onSaved, onDeleted }) {
   const [form, setForm] = useState(empty)
   const [busy, setBusy] = useState(false)
+  const [deleting, setDeleting] = useState(false)
   const [error, setError] = useState('')
 
   const companyId = company?.id
@@ -108,6 +111,7 @@ export default function EditCompanyModal({ company, onClose, onSaved }) {
           buyoutEnabled: form.buyoutEnabled,
           salesrenderId: form.salesrenderId.trim(),
           status: form.status,
+          direction: form.direction,
           managerName: form.managerName.trim(),
           managerPhone: form.managerPhone.trim(),
           managerEmail: form.managerEmail.trim(),
@@ -130,6 +134,25 @@ export default function EditCompanyModal({ company, onClose, onSaved }) {
       setError(err.message || 'Не удалось сохранить')
     } finally {
       setBusy(false)
+    }
+  }
+
+  async function remove() {
+    if (!company) return
+    const ok = window.confirm(
+      `Удалить клиента «${company.name}»?\n\nБудут удалены его неоплаченные счета и документы. Это действие необратимо.`,
+    )
+    if (!ok) return
+    setDeleting(true)
+    setError('')
+    try {
+      await api(`/api/admin/companies/${company.id}`, { method: 'DELETE' })
+      onDeleted?.(company.id)
+      onClose?.()
+    } catch (err) {
+      setError(err.message || 'Не удалось удалить клиента')
+    } finally {
+      setDeleting(false)
     }
   }
 
@@ -245,6 +268,20 @@ export default function EditCompanyModal({ company, onClose, onSaved }) {
             </select>
           </label>
           <label>
+            Направление
+            <select
+              value={form.direction}
+              onChange={(e) => setForm({ ...form, direction: e.target.value })}
+            >
+              <option value="hr">HR</option>
+              <option value="digital">Digital</option>
+              <option value="kc">КЦ</option>
+            </select>
+            <small className="cab-muted">
+              В каком рабочем месте показывать клиента и его счета.
+            </small>
+          </label>
+          <label>
             При нулевом балансе
             <select
               value={form.lowBalanceAction}
@@ -324,10 +361,28 @@ export default function EditCompanyModal({ company, onClose, onSaved }) {
               borderTop: '1px solid rgba(154, 211, 255, 0.14)',
             }}
           >
-            <button type="button" className="cab-btn ghost" onClick={onClose} disabled={busy}>
+            <button
+              type="button"
+              className="cab-btn ghost"
+              style={{
+                marginRight: 'auto',
+                color: '#ff9b9b',
+                borderColor: 'rgba(255,107,107,0.45)',
+              }}
+              onClick={remove}
+              disabled={busy || deleting}
+            >
+              {deleting ? 'Удаление…' : 'Удалить'}
+            </button>
+            <button
+              type="button"
+              className="cab-btn ghost"
+              onClick={onClose}
+              disabled={busy || deleting}
+            >
               Отмена
             </button>
-            <button type="submit" className="cab-btn primary" disabled={busy}>
+            <button type="submit" className="cab-btn primary" disabled={busy || deleting}>
               {busy ? 'Сохранение…' : 'Сохранить'}
             </button>
           </div>
