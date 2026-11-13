@@ -1,3 +1,4 @@
+import fs from 'fs';
 import dayjs from 'dayjs';
 import { query } from '../db.js';
 import { actMonthTitle, generateActPdf } from './actPdf.js';
@@ -206,7 +207,7 @@ export async function ensureMonthlyAct({
       { company_id: companyData.id, number },
     );
     existing = existingRows[0] || null;
-    if (existing?.file_path && !force) {
+    if (existing?.file_path && fs.existsSync(existing.file_path) && !force) {
       queueDocumentBackup(existing);
       return {
         skipped: false,
