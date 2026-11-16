@@ -80,6 +80,9 @@ export async function loadActTransactions(companyId, period) {
       WHERE t.company_id = :company_id
         AND t.type = 'debit'
         AND t.status = 'posted'
+        -- В акт попадают только оказанные услуги. Ручные корректировки
+        -- («Ибо нехуй», «/» и т.п.) — это не услуги, их в акте быть не должно.
+        AND t.service_id IS NOT NULL
         AND t.created_at BETWEEN :from AND :to
       ORDER BY t.created_at ASC, t.id ASC`,
     {
