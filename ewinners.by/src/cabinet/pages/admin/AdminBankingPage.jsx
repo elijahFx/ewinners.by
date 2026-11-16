@@ -548,10 +548,10 @@ export default function AdminBankingPage() {
           <tbody aria-busy={showSkeleton}>
             {showSkeleton
               ? skeletonRows
-              : visibleItems.map((row) => {
+              : visibleItems.map((row, index) => {
               const isExpense = row.direction === 'expense'
               return (
-                <tr key={row.id} className="border-t border-white/[0.06] align-top">
+                <tr key={`${row.reference || row.id || 'row'}-${index}`} className="border-t border-white/[0.06] align-top">
                   <td className="px-3 py-3 whitespace-nowrap text-[#cfe6ff]">{formatDate(row.date)}</td>
                   {tab === 'statement' ? (
                     <td className="px-3 py-3">

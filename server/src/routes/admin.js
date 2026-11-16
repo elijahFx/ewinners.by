@@ -1180,12 +1180,34 @@ router.get('/banking/movements', async (req, res) => {
     // Copy: the cached array must not be reordered in place by the sort below.
     // Банк иногда отдаёт движения шире запрошенного периода (по value date),
     // поэтому дополнительно ограничиваем выборку датой, которую показываем.
-    const periodMovements = (data.movements || []).filter((m) => {
-      if (!m.date) return true;
-      if (from && String(m.date).slice(0, 10) < from) return false;
-      if (to && String(m.date).slice(0, 10) > to) return false;
-      return true;
-    });
+    // И убираем повторы: MTBank может вернуть одну операцию несколько раз,
+    // из-за чего в таблице появлялись дубли и ломались React-ключи.
+    // Ключ строки на фронте — m.id/reference, поэтому он должен быть уникальным.
+    const seenIds = new Set();
+    const seenFingerprints = new Set();
+    const periodMovements = (data.movements || [])
+      .filter((m) => {
+        if (!m.date) return true;
+        if (from && String(m.date).slice(0, 10) < from) return false;
+        if (to && String(m.date).slice(0, 10) > to) return false;
+        return true;
+      })
+      .filter((m) => {
+        const rowId = String(m.id || m.reference || '');
+        if (rowId && seenIds.has(rowId)) return false;
+        const fingerprint = [
+          String(m.date || ''),
+          Number(m.amount || 0).toFixed(2),
+          String(m.direction || ''),
+          String(m.reference || m.id || ''),
+          String(m.purpose || ''),
+          String(m.counterparty || ''),
+        ].join('|');
+        if (seenFingerprints.has(fingerprint)) return false;
+        if (rowId) seenIds.add(rowId);
+        seenFingerprints.add(fingerprint);
+        return true;
+      });
     let items = [...periodMovements];
     const direction = req.query.direction;
     if (direction === 'income' || direction === 'expense') {
