@@ -115,13 +115,40 @@ export async function syncMtbankPayments({ from, to, lookbackDays = 7 } = {}) {
     from || dayjs(dateTo).subtract(lookbackDays, 'day').format('YYYY-MM-DD'),
   ).slice(0, 10);
 
-  const statement = await fetchMtbankStatement({ from: dateFrom, to: dateTo });
-  if (!statement.configured || !statement.ready) {
+  // MTBank иногда отдаёт длинный период (7 дней) без самых свежих платежей:
+  // список строится по кэшу и новый платёж в него не попадает. Поэтому кроме
+  // общего периода всегда запрашиваем короткий «свежий» хвост за 3 дня и
+  // объединяем результаты. Иначе оплата видна в банкинге, но не зачисляется.
+  const recentFrom = dayjs(dateTo).subtract(2, 'day').format('YYYY-MM-DD');
+  const freshFrom = recentFrom < dateFrom ? dateFrom : recentFrom;
+  const ranges =
+    freshFrom === dateFrom
+      ? [[dateFrom, dateTo]]
+      : [
+          [dateFrom, dateTo],
+          [freshFrom, dateTo],
+        ];
+
+  const results = await Promise.allSettled(
+    ranges.map(([rangeFrom, rangeTo]) =>
+      fetchMtbankStatement({ from: rangeFrom, to: rangeTo, refresh: true }),
+    ),
+  );
+  const statements = results
+    .filter((result) => result.status === 'fulfilled')
+    .map((result) => result.value);
+  const statement = statements.find((item) => item.configured && item.ready);
+
+  if (!statement) {
+    const first = statements[0];
     return {
       ok: false,
-      configured: statement.configured,
-      ready: statement.ready,
-      message: statement.message,
+      configured: Boolean(first?.configured),
+      ready: Boolean(first?.ready),
+      message:
+        first?.message ||
+        results.find((result) => result.status === 'rejected')?.reason?.message ||
+        'MTBank: не удалось получить выписку',
       period: { from: dateFrom, to: dateTo },
       scanned: 0,
       matched: 0,
@@ -130,7 +157,19 @@ export async function syncMtbankPayments({ from, to, lookbackDays = 7 } = {}) {
     };
   }
 
-  const incomes = (statement.movements || []).filter((m) => m.direction === 'income');
+  const merged = new Map();
+  for (const item of statements) {
+    if (!item.ready) continue;
+    for (const movement of item.movements || []) {
+      const key = String(
+        movement.id ||
+          [movement.date, movement.amount, movement.direction, movement.reference, movement.purpose].join('|'),
+      );
+      if (!merged.has(key)) merged.set(key, movement);
+    }
+  }
+
+  const incomes = [...merged.values()].filter((m) => m.direction === 'income');
   const paid = [];
   const skipped = [];
   let matched = 0;
